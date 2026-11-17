@@ -61,6 +61,24 @@ If `make test` passes, you are ready.
 5. If you changed behavior, update `README.md` or `docs/ARCHITECTURE.md`.
 6. Open a pull request and fill in the template. Link the issue with `Closes #123`.
 
+## Security checks
+
+Every pull request runs the `Security` workflow, and its `security` job must pass before anything can merge. It checks that:
+
+- no new dependency has a known high or critical advisory, including packages GitHub has flagged as malware
+- every crate in `Cargo.lock` and `fuzz/Cargo.lock` comes from crates.io, not a git repo or another registry
+- the commits in the pull request contain no secrets or keys
+
+If a check fails, read the log, fix the cause and push again. If you think it is a false positive, explain why in the pull request and a maintainer will look at it. Do not edit files under `.github/` to make a check pass. Changes there always need the project lead's review.
+
+Maintainers, before merging a pull request:
+
+1. Confirm the `security` check has passed.
+2. Read the whole diff, not just the description.
+3. Question anything unusual: new dependencies, lockfile changes, install scripts, changes under `.github/`, obfuscated code or long encoded strings, unknown URLs, and code that reads environment variables or sends data somewhere.
+4. Do not run a pull request's code on your machine before you have read it.
+5. Leave the `Stellar Wave` label, complexity and points to the project lead.
+
 ## Code guidelines
 
 - Return a typed `Error` instead of panicking for anything a caller can trigger.
