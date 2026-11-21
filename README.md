@@ -85,7 +85,39 @@ make test     # run unit tests
 make build    # build the optimized WASM with stellar contract build
 make fmt      # format
 make lint     # clippy with warnings as errors
+make bindings # generate TypeScript bindings package
 ```
+
+### TypeScript bindings
+
+The frontend and backend use TypeScript bindings generated from the contract WASM:
+
+```sh
+# Generate bindings into packages/aidline-bindings
+stellar contract bindings typescript \
+  --wasm target/wasm32v1-none/release/aidline.wasm \
+  --output-dir packages/aidline-bindings \
+  --overwrite
+
+# Build the npm package
+cd packages/aidline-bindings
+npm install
+npm run build
+```
+
+You can import and initialize the client in TypeScript:
+
+```ts
+import { Client } from 'aidline-bindings';
+
+const client = new Client({
+  contractId: 'CALNXTTPKPTCCWSTN3NHQNZHPXM2IXQZQMFBCCK7LI3N5FRB6DB5NLHK',
+  networkPassphrase: 'Test SDF Network ; September 2015',
+  rpcUrl: 'https://soroban-testnet.stellar.org',
+});
+```
+
+CI automatically builds and uploads the latest bindings as the `aidline-typescript-bindings` workflow artifact on pushes to main.
 
 ### Deploy to testnet
 

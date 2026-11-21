@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use proptest::prelude::*;
 use soroban_sdk::{
     Address, Env, String,
     testutils::{Address as _, Events as _, Ledger},
@@ -162,18 +163,54 @@ fn donations_are_held_in_escrow() {
 }
 
 #[test]
-fn donation_cannot_exceed_goal() {
+fn donation_accepts_partial_amount_when_passing_goal() {
     let s = Setup::new();
-    let id = s.campaign();
+    let id = s.campaign(); // goal 1000
     let donor = s.donor(2000);
 
+    // Donating 1500 to a 1000-goal campaign accepts 1000, transfers only 1000, returns 1000
+    let accepted = s.client.donate(&donor, &id, &1500);
+    assert_eq!(accepted, 1000);
+    assert_eq!(s.token.balance(&donor), 1000);
+    assert_eq!(s.token.balance(&s.client.address), 1000);
+    assert_eq!(s.client.get_campaign(&id).raised, 1000);
+    assert_eq!(s.client.contribution_of(&id, &donor), 1000);
+
+    // Fully funded campaign now rejects subsequent donations
     assert_eq!(
-        s.client.try_donate(&donor, &id, &1001),
+        s.client.try_donate(&donor, &id, &10),
         Err(Ok(Error::GoalExceeded))
     );
     assert_eq!(
         s.client.try_donate(&donor, &id, &0),
         Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn donation_partial_acceptance_with_existing_raised() {
+    let s = Setup::new();
+    let id = s.campaign(); // goal 1000
+    let donor_a = s.donor(1000);
+    let donor_b = s.donor(1000);
+
+    // Donor A donates 700 (exact)
+    let accepted_a = s.client.donate(&donor_a, &id, &700);
+    assert_eq!(accepted_a, 700);
+    assert_eq!(s.token.balance(&donor_a), 300);
+
+    // Donor B offers 500 when only 300 is needed
+    let accepted_b = s.client.donate(&donor_b, &id, &500);
+    assert_eq!(accepted_b, 300);
+    assert_eq!(s.token.balance(&donor_b), 700); // only 300 deducted
+    assert_eq!(s.client.get_campaign(&id).raised, 1000);
+    assert_eq!(s.client.contribution_of(&id, &donor_b), 300);
+
+    // Now campaign is fully funded, rejects any further donations
+    let donor_c = s.donor(100);
+    assert_eq!(
+        s.client.try_donate(&donor_c, &id, &50),
+        Err(Ok(Error::GoalExceeded))
     );
 }
 
@@ -1213,4 +1250,252 @@ fn a_pledge_moves_no_money_until_a_milestone_is_approved() {
     assert_eq!(s.token.balance(&donor), 700);
     assert_eq!(s.token.balance(&s.beneficiary), 300);
     assert_eq!(s.client.get_pledge(&pledge_id).unwrap().pulled_amount, 300);
+}
+
+#[test]
+fn extend_campaign_ttl_allows_entry_to_survive_past_original_ttl() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    // Verify initial campaign exists
+    let initial = s.client.get_campaign(&id);
+    assert_eq!(initial.id, id);
+
+    // 120 days in ledgers = 120 * 17_280 = 2_073_600
+    let day_in_ledgers = 17_280;
+
+    // Advance sequence number to day 100
+    s.env.ledger().set_sequence_number(100 * day_in_ledgers);
+
+    // Extend TTL publicly without any auth
+    s.client.extend_campaign_ttl(&id);
+
+    // Advance past the original 120-day persistent lifetime (to day 150)
+    s.env.ledger().set_sequence_number(150 * day_in_ledgers);
+
+    // The campaign entry survives because its TTL was extended
+    let campaign = s.client.get_campaign(&id);
+    assert_eq!(campaign.id, id);
+    assert_eq!(campaign.goal, 1000);
+}
+
+#[test]
+fn extend_campaign_ttl_validates_existence_and_requires_no_auth() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    // Non-existent campaign returns CampaignNotFound
+    assert_eq!(
+        s.client.try_extend_campaign_ttl(&9999),
+        Err(Ok(Error::CampaignNotFound))
+    );
+
+    // Any caller can extend TTL without specific authorization
+    assert_eq!(s.client.try_extend_campaign_ttl(&id), Ok(Ok(())));
+}
+
+// ─── Property tests for refund math ──────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 40,
+        .. ProptestConfig::default()
+    })]
+
+    #[test]
+    fn prop_refund_invariants_hold_after_cancellation(
+        milestone_amounts in prop::collection::vec(100i128..10_000i128, 1..=5),
+        donor_donations in prop::collection::vec(10i128..5_000i128, 1..=8),
+        num_milestones_to_release in 0usize..5,
+    ) {
+        let s = Setup::new();
+        let mut sdk_milestones = soroban_sdk::Vec::new(&s.env);
+        let mut goal: i128 = 0;
+        for &m in milestone_amounts.iter() {
+            sdk_milestones.push_back(m);
+            goal += m;
+        }
+
+        let id = s.client.create_campaign(
+            &s.creator,
+            &s.beneficiary,
+            &s.verifier,
+            &CampaignKind::Emergency,
+            &String::from_str(&s.env, "ipfs://prop-test"),
+            &(s.env.ledger().timestamp() + 30 * DAY),
+            &sdk_milestones,
+        );
+
+        let mut total_raised: i128 = 0;
+        let mut active_donors = soroban_sdk::Vec::new(&s.env);
+
+        for &amount in donor_donations.iter() {
+            if total_raised >= goal {
+                break;
+            }
+            let donor = s.donor(amount);
+            let accepted = s.client.donate(&donor, &id, &amount);
+            if accepted > 0 {
+                total_raised += accepted;
+                active_donors.push_back(donor);
+            }
+        }
+
+        let mut cumulative: i128 = 0;
+        let mut max_releasable: usize = 0;
+        for &m in milestone_amounts.iter() {
+            if cumulative + m <= total_raised {
+                cumulative += m;
+                max_releasable += 1;
+            } else {
+                break;
+            }
+        }
+
+        let release_count = num_milestones_to_release.min(max_releasable);
+        let mut total_released: i128 = 0;
+        for _ in 0..release_count {
+            let released = s.client.approve_milestone(&id, &s.proof());
+            total_released += released;
+        }
+
+        if release_count < milestone_amounts.len() {
+            // Campaign remains Active; cancellation succeeds and opens pro-rata refunds.
+            s.client.cancel_campaign(&s.creator, &id);
+
+            let mut total_refunded: i128 = 0;
+            for donor in active_donors.iter() {
+                let refund = s.client.refund(&donor, &id);
+                prop_assert!(refund >= 0, "Refund must be non-negative");
+                total_refunded += refund;
+            }
+
+            // 1. Total refunds plus releases never exceed total raised
+            prop_assert!(
+                total_refunded + total_released <= total_raised,
+                "Total refunded ({}) + total released ({}) exceeded total raised ({})",
+                total_refunded, total_released, total_raised
+            );
+
+            // 2. Contract balance never goes negative and equals unreleased dust
+            let contract_balance = s.token.balance(&s.client.address);
+            prop_assert!(
+                contract_balance >= 0,
+                "Contract balance is negative: {}",
+                contract_balance
+            );
+            prop_assert_eq!(
+                contract_balance,
+                total_raised - total_released - total_refunded,
+                "Contract balance did not match total_raised - total_released - total_refunded"
+            );
+            prop_assert_eq!(s.token.balance(&s.beneficiary), total_released);
+        } else {
+            // All milestones were approved; campaign is Completed and funds delivered.
+            let c = s.client.get_campaign(&id);
+            prop_assert_eq!(c.status, CampaignStatus::Completed);
+            prop_assert!(s.client.try_cancel_campaign(&s.creator, &id).is_err());
+            for donor in active_donors.iter() {
+                prop_assert!(s.client.try_refund(&donor, &id).is_err());
+            }
+            prop_assert_eq!(s.token.balance(&s.beneficiary), total_released);
+            let contract_balance = s.token.balance(&s.client.address);
+            prop_assert!(contract_balance >= 0);
+            prop_assert_eq!(contract_balance, total_raised - total_released);
+        }
+    }
+
+    #[test]
+    fn prop_refund_invariants_hold_after_expiry(
+        milestone_amounts in prop::collection::vec(100i128..10_000i128, 1..=5),
+        donor_donations in prop::collection::vec(10i128..5_000i128, 1..=8),
+        num_milestones_to_release in 0usize..5,
+    ) {
+        let s = Setup::new();
+        let mut sdk_milestones = soroban_sdk::Vec::new(&s.env);
+        let mut goal: i128 = 0;
+        for &m in milestone_amounts.iter() {
+            sdk_milestones.push_back(m);
+            goal += m;
+        }
+
+        let deadline = s.env.ledger().timestamp() + 30 * DAY;
+        let id = s.client.create_campaign(
+            &s.creator,
+            &s.beneficiary,
+            &s.verifier,
+            &CampaignKind::Climate,
+            &String::from_str(&s.env, "ipfs://prop-expiry"),
+            &deadline,
+            &sdk_milestones,
+        );
+
+        let mut total_raised: i128 = 0;
+        let mut active_donors = soroban_sdk::Vec::new(&s.env);
+
+        for &amount in donor_donations.iter() {
+            if total_raised >= goal {
+                break;
+            }
+            let donor = s.donor(amount);
+            let accepted = s.client.donate(&donor, &id, &amount);
+            if accepted > 0 {
+                total_raised += accepted;
+                active_donors.push_back(donor);
+            }
+        }
+
+        let mut cumulative: i128 = 0;
+        let mut max_releasable: usize = 0;
+        for &m in milestone_amounts.iter() {
+            if cumulative + m <= total_raised {
+                cumulative += m;
+                max_releasable += 1;
+            } else {
+                break;
+            }
+        }
+
+        let release_count = num_milestones_to_release.min(max_releasable);
+        let mut total_released: i128 = 0;
+        for _ in 0..release_count {
+            let released = s.client.approve_milestone(&id, &s.proof());
+            total_released += released;
+        }
+
+        // Pass deadline to trigger expiry refunds
+        s.env.ledger().set_timestamp(deadline + 1);
+
+        if release_count < milestone_amounts.len() {
+            let mut total_refunded: i128 = 0;
+            for donor in active_donors.iter() {
+                let refund = s.client.refund(&donor, &id);
+                prop_assert!(refund >= 0, "Refund must be non-negative");
+                total_refunded += refund;
+            }
+
+            // Invariants
+            prop_assert!(
+                total_refunded + total_released <= total_raised,
+                "Total refunded ({}) + total released ({}) exceeded total raised ({})",
+                total_refunded, total_released, total_raised
+            );
+            let contract_balance = s.token.balance(&s.client.address);
+            prop_assert!(contract_balance >= 0, "Negative balance");
+            prop_assert_eq!(
+                contract_balance,
+                total_raised - total_released - total_refunded
+            );
+        } else {
+            // Already completed
+            let c = s.client.get_campaign(&id);
+            prop_assert_eq!(c.status, CampaignStatus::Completed);
+            for donor in active_donors.iter() {
+                prop_assert!(s.client.try_refund(&donor, &id).is_err());
+            }
+            let contract_balance = s.token.balance(&s.client.address);
+            prop_assert!(contract_balance >= 0);
+            prop_assert_eq!(contract_balance, total_raised - total_released);
+        }
+    }
 }
