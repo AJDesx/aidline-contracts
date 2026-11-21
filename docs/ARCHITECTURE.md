@@ -114,7 +114,7 @@ The backend indexer reads these to build campaign pages, donor histories and imp
 
 ## Design decisions
 
-**Donations are capped at the goal.** This keeps milestone math exact. Allowing overfunding (with the surplus going to a reserve or back to donors) is a planned improvement.
+**Donations accept up to the remaining goal amount.** A donation exceeding the remaining goal accepts `min(amount, goal - raised)`, transfers only that accepted amount into escrow, and returns it. Once a campaign is fully funded (`raised == goal`), subsequent donations reject with `GoalExceeded`. This keeps milestone math exact without rejecting generous donors.
 
 **Milestones are released strictly in order.** Partial or parallel milestones add complexity that the MVP does not need.
 
