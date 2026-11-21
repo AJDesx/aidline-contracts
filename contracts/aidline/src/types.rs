@@ -30,6 +30,8 @@ pub struct Campaign {
     pub beneficiary: Address,
     /// Verifier who must confirm each milestone before funds move.
     pub verifier: Address,
+    /// Token (Stellar Asset Contract) this campaign raises and pays out in (Issue #10).
+    pub token: Address,
     pub kind: CampaignKind,
     /// Off chain metadata (title, description, images), usually an IPFS or HTTPS URI.
     pub metadata_uri: String,
@@ -149,4 +151,6 @@ pub enum DataKey {
     MilestoneDueDates(u64),
     // Issue #9: milestone approvals: (campaign_id, milestone_index) -> Vec<Address>
     MilestoneApprovals(u64, u32),
+    // Issue #10: token allowlist
+    AllowedToken(Address),
 }

@@ -397,3 +397,20 @@ impl MilestoneApproved {
         );
     }
 }
+
+// ─── Issue #10: Token allowlist updated event ───────────────────────────────
+
+/// Emitted when the admin adds or removes a token from the campaign allowlist.
+pub struct TokenAllowlistUpdated {
+    pub token: Address,
+    pub allowed: bool,
+}
+
+impl TokenAllowlistUpdated {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("tok_allow"), self.token.clone()),
+            self.allowed,
+        );
+    }
+}

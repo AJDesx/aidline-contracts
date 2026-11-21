@@ -43,4 +43,7 @@ pub enum Error {
     InvalidThreshold = 27,
     DuplicateApproval = 28,
     DuplicateVerifier = 29,
+
+    // Issue #10: per-campaign token allowlist
+    TokenNotAllowed = 30,
 }

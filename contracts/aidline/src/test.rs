@@ -60,6 +60,7 @@ impl<'a> Setup<'a> {
             &self.creator,
             &self.beneficiary,
             &self.verifier,
+            &self.token.address,
             &CampaignKind::Emergency,
             &String::from_str(&self.env, "ipfs://flood-relief"),
             &(self.env.ledger().timestamp() + 30 * DAY),
@@ -98,6 +99,7 @@ fn rejects_unknown_verifier() {
         &s.creator,
         &s.beneficiary,
         &stranger,
+        &s.token.address,
         &CampaignKind::Climate,
         &String::from_str(&s.env, "ipfs://trees"),
         &(s.env.ledger().timestamp() + DAY),
@@ -116,6 +118,7 @@ fn rejects_bad_milestones_and_deadline() {
         &s.creator,
         &s.beneficiary,
         &s.verifier,
+        &s.token.address,
         &CampaignKind::Climate,
         &uri,
         &future,
@@ -127,6 +130,7 @@ fn rejects_bad_milestones_and_deadline() {
         &s.creator,
         &s.beneficiary,
         &s.verifier,
+        &s.token.address,
         &CampaignKind::Climate,
         &uri,
         &future,
@@ -138,6 +142,7 @@ fn rejects_bad_milestones_and_deadline() {
         &s.creator,
         &s.beneficiary,
         &s.verifier,
+        &s.token.address,
         &CampaignKind::Climate,
         &uri,
         &s.env.ledger().timestamp(),
@@ -354,6 +359,7 @@ fn emergency_fast_track_fails_for_non_emergency() {
         &s.creator,
         &s.beneficiary,
         &s.verifier,
+        &s.token.address,
         &CampaignKind::Climate,
         &String::from_str(&s.env, "ipfs://trees"),
         &(s.env.ledger().timestamp() + 30 * DAY),
@@ -428,6 +434,7 @@ fn test_measure_resource_costs() {
         &s.creator,
         &s.beneficiary,
         &s.verifier,
+        &s.token.address,
         &CampaignKind::Emergency,
         &String::from_str(env, "ipfs://cost-test"),
         &(env.ledger().timestamp() + 30 * DAY),
@@ -451,6 +458,7 @@ fn test_measure_resource_costs() {
         &s.creator,
         &s.beneficiary,
         &s.verifier,
+        &s.token.address,
         &CampaignKind::Climate,
         &String::from_str(env, "ipfs://cost-cancel"),
         &(env.ledger().timestamp() + 30 * DAY),
@@ -512,6 +520,7 @@ fn test_events_emitted() {
         &s.creator,
         &s.beneficiary,
         &s.verifier,
+        &s.token.address,
         &CampaignKind::Climate,
         &String::from_str(env, "ipfs://ev-cancel"),
         &(env.ledger().timestamp() + 30 * DAY),
@@ -548,6 +557,7 @@ fn due_date_refunds_do_not_cancel_campaign() {
         &s.creator,
         &s.beneficiary,
         &s.verifier,
+        &s.token.address,
         &CampaignKind::Emergency,
         &String::from_str(env, "ipfs://due-dates"),
         &(now + 30 * DAY),
@@ -653,6 +663,7 @@ fn two_donors_reach_goal_exactly_campaign_fully_funded() {
         &s.creator,
         &s.beneficiary,
         &s.verifier,
+        &s.token.address,
         &CampaignKind::Climate,
         &String::from_str(&s.env, "ipfs://exact"),
         &(s.env.ledger().timestamp() + 30 * DAY),
@@ -1237,6 +1248,7 @@ fn multisig_campaign_creation_validation() {
         &s.beneficiary,
         &verifiers,
         &2,
+        &s.token.address,
         &CampaignKind::Climate,
         &uri,
         &deadline,
@@ -1253,6 +1265,7 @@ fn multisig_campaign_creation_validation() {
         &s.beneficiary,
         &verifiers,
         &0,
+        &s.token.address,
         &CampaignKind::Climate,
         &uri,
         &deadline,
@@ -1266,6 +1279,7 @@ fn multisig_campaign_creation_validation() {
         &s.beneficiary,
         &verifiers,
         &4,
+        &s.token.address,
         &CampaignKind::Climate,
         &uri,
         &deadline,
@@ -1280,6 +1294,7 @@ fn multisig_campaign_creation_validation() {
         &s.beneficiary,
         &empty_verifiers,
         &1,
+        &s.token.address,
         &CampaignKind::Climate,
         &uri,
         &deadline,
@@ -1294,6 +1309,7 @@ fn multisig_campaign_creation_validation() {
         &s.beneficiary,
         &dup_verifiers,
         &2,
+        &s.token.address,
         &CampaignKind::Climate,
         &uri,
         &deadline,
@@ -1309,6 +1325,7 @@ fn multisig_campaign_creation_validation() {
         &s.beneficiary,
         &unreg_verifiers,
         &2,
+        &s.token.address,
         &CampaignKind::Climate,
         &uri,
         &deadline,
@@ -1336,6 +1353,7 @@ fn multisig_milestone_release_requires_threshold() {
         &s.beneficiary,
         &verifiers,
         &2,
+        &s.token.address,
         &CampaignKind::Climate,
         &uri,
         &deadline,
@@ -1423,6 +1441,7 @@ fn multisig_campaign_blocks_anonymous_approve_milestone() {
         &s.beneficiary,
         &verifiers,
         &2,
+        &s.token.address,
         &CampaignKind::Climate,
         &uri,
         &deadline,
@@ -1434,4 +1453,111 @@ fn multisig_campaign_blocks_anonymous_approve_milestone() {
     // Calling approve_milestone without specifying verifier on a multisig campaign returns Unauthorized
     let res = s.client.try_approve_milestone(&id, &s.proof());
     assert_eq!(res, Err(Ok(Error::Unauthorized)));
+}
+
+// ─── Issue #10 Tests: Per-campaign tokens and allowlist ──────────────────────
+
+#[test]
+fn admin_manages_token_allowlist() {
+    let s = Setup::new();
+    let new_token = Address::generate(&s.env);
+
+    // Initially not allowed
+    assert!(!s.client.is_token_allowed(&new_token));
+
+    // Admin adds token
+    s.client.add_allowed_token(&new_token);
+    assert!(s.client.is_token_allowed(&new_token));
+
+    // Admin removes token
+    s.client.remove_allowed_token(&new_token);
+    assert!(!s.client.is_token_allowed(&new_token));
+}
+
+#[test]
+fn unallowed_token_campaign_creation_fails() {
+    let s = Setup::new();
+    let unallowed_tok = Address::generate(&s.env);
+
+    let res = s.client.try_create_campaign(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &unallowed_tok,
+        &CampaignKind::Climate,
+        &String::from_str(&s.env, "ipfs://fail"),
+        &(s.env.ledger().timestamp() + DAY),
+        &vec![&s.env, 100],
+    );
+    assert_eq!(res, Err(Ok(Error::TokenNotAllowed)));
+}
+
+#[test]
+fn campaigns_with_different_tokens_operate_side_by_side() {
+    let s = Setup::new();
+    let env = &s.env;
+
+    // Create a second token: USDC SAC
+    let usdc_sac = env.register_stellar_asset_contract_v2(s.admin.clone());
+    let usdc = TokenClient::new(env, &usdc_sac.address());
+    let usdc_addr = usdc_sac.address();
+
+    // Admin adds USDC to allowlist
+    s.client.add_allowed_token(&usdc_addr);
+    assert!(s.client.is_token_allowed(&usdc_addr));
+
+    // Campaign 1: raises in default token
+    let c1_id = s.campaign();
+
+    // Campaign 2: raises in USDC
+    let c2_id = s.client.create_campaign(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &usdc_addr,
+        &CampaignKind::Emergency,
+        &String::from_str(env, "ipfs://usdc-campaign"),
+        &(env.ledger().timestamp() + 30 * DAY),
+        &vec![env, 400, 600],
+    );
+
+    let c1 = s.client.get_campaign(&c1_id);
+    let c2 = s.client.get_campaign(&c2_id);
+    assert_eq!(c1.token, s.token.address);
+    assert_eq!(c2.token, usdc_addr);
+
+    // Donors: donor1 has token A, donor2 has USDC
+    let donor1 = s.donor(1000);
+    let donor2 = Address::generate(env);
+    StellarAssetClient::new(env, &usdc_addr).mint(&donor2, &1000);
+
+    // Donate to Campaign 1 with token A
+    s.client.donate(&donor1, &c1_id, &500);
+    // Donate to Campaign 2 with USDC
+    s.client.donate(&donor2, &c2_id, &500);
+
+    // Check balances of escrow contract
+    assert_eq!(s.token.balance(&s.client.address), 500);
+    assert_eq!(usdc.balance(&s.client.address), 500);
+    assert_eq!(s.token.balance(&s.beneficiary), 0);
+    assert_eq!(usdc.balance(&s.beneficiary), 0);
+
+    // Approve milestone on Campaign 1 (releases 300 in token A)
+    s.client.approve_milestone(&c1_id, &s.proof());
+    assert_eq!(s.token.balance(&s.beneficiary), 300);
+    assert_eq!(usdc.balance(&s.beneficiary), 0);
+    assert_eq!(s.token.balance(&s.client.address), 200);
+
+    // Approve milestone on Campaign 2 (releases 400 in USDC)
+    s.client.approve_milestone(&c2_id, &s.proof());
+    assert_eq!(s.token.balance(&s.beneficiary), 300);
+    assert_eq!(usdc.balance(&s.beneficiary), 400);
+    assert_eq!(usdc.balance(&s.client.address), 100);
+
+    // Cancel Campaign 2 and test refund in USDC
+    s.client.cancel_campaign(&s.creator, &c2_id);
+    let refund_amt = s.client.refund(&donor2, &c2_id);
+    assert_eq!(refund_amt, 100);
+    assert_eq!(usdc.balance(&donor2), 600);
+    assert_eq!(usdc.balance(&s.client.address), 0);
 }

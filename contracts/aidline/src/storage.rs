@@ -242,3 +242,20 @@ pub fn save_milestone_approvals(
     env.storage().persistent().set(&key, approvals);
     bump(env, &key);
 }
+
+// ─── Issue #10: Token allowlist storage ──────────────────────────────────────
+
+pub fn is_token_allowed(env: &Env, token: &Address) -> bool {
+    let key = DataKey::AllowedToken(token.clone());
+    env.storage().persistent().get(&key).unwrap_or(false)
+}
+
+pub fn set_token_allowed(env: &Env, token: &Address, allowed: bool) {
+    let key = DataKey::AllowedToken(token.clone());
+    if allowed {
+        env.storage().persistent().set(&key, &true);
+        bump(env, &key);
+    } else {
+        env.storage().persistent().remove(&key);
+    }
+}

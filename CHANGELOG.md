@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- Per-campaign token support with an admin-managed allowlist, enabling campaigns to raise in USDC or other approved tokens
+- Multisig verification for milestones with m-of-n verifier approval thresholds
 - Tests for verifier bonds, sponsor matching pools and pledges, covering every error those features can return (34 new tests)
 - Dependency audit job in CI (`cargo audit`)
 - Emergency fast track: a partial first tranche for Emergency campaigns (#23, @oladayo2222)
@@ -21,6 +23,10 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Fixed
 
 - Fuzz harness now builds and the CI fuzz job runs from the repository root
+
+### Changed
+
+- **Migration note**: The `Campaign` struct now stores its own `token: Address` field. Campaign creation entry points (`create_campaign`, `create_multisig_campaign`, `create_campaign_with_due_dates`, `create_multisig_with_due_dates`) now take `token: Address`, which must be approved on the admin token allowlist. All campaign donations, milestone releases, sponsor pools, pledges, and refunds now operate in the campaign's specified token.
 
 ## [0.1.0] - 2026-10-04
 

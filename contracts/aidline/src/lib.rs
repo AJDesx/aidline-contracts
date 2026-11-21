@@ -26,8 +26,8 @@ use events::{
     AdminChanged, BondSlashed, BondWithdrawn, CampaignCancelled, CampaignCreated, Donated,
     EmergencyAdvanceReleased, MatchingApplied, MilestoneApproved, MilestoneReleased, PledgeCreated,
     PledgePulled, PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited,
-    SponsorPoolReturned, VerifierBondPosted, VerifierDeregistered, VerifierReassigned,
-    VerifierUpdated,
+    SponsorPoolReturned, TokenAllowlistUpdated, VerifierBondPosted, VerifierDeregistered,
+    VerifierReassigned, VerifierUpdated,
 };
 
 const MAX_MILESTONES: u32 = 20;
@@ -59,6 +59,7 @@ impl Aidline {
     pub fn __constructor(env: Env, admin: Address, token: Address) {
         storage::set_admin(&env, &admin);
         storage::set_token(&env, &token);
+        storage::set_token_allowed(&env, &token, true);
         storage::bump_instance(&env);
     }
 
@@ -118,6 +119,39 @@ impl Aidline {
             new: new_admin,
         }
         .publish(&env);
+    }
+
+    // ─── Token Allowlist (admin only) ─────────────────────────────────────────
+
+    /// Adds `token` to the list of allowed campaign tokens.
+    ///
+    /// Only the admin may call this. Emits [`TokenAllowlistUpdated`].
+    pub fn add_allowed_token(env: Env, token: Address) {
+        storage::admin(&env).require_auth();
+        storage::set_token_allowed(&env, &token, true);
+        TokenAllowlistUpdated {
+            token,
+            allowed: true,
+        }
+        .publish(&env);
+    }
+
+    /// Removes `token` from the list of allowed campaign tokens.
+    ///
+    /// Only the admin may call this. Emits [`TokenAllowlistUpdated`].
+    pub fn remove_allowed_token(env: Env, token: Address) {
+        storage::admin(&env).require_auth();
+        storage::set_token_allowed(&env, &token, false);
+        TokenAllowlistUpdated {
+            token,
+            allowed: false,
+        }
+        .publish(&env);
+    }
+
+    /// Returns `true` if `token` is currently on the allowlist for new campaigns.
+    pub fn is_token_allowed(env: Env, token: Address) -> bool {
+        storage::is_token_allowed(&env, &token)
     }
 
     // ─── Bond configuration (admin only) ──────────────────────────────────────
@@ -378,13 +412,15 @@ impl Aidline {
     /// Creates a new campaign and returns its ID.
     ///
     /// `creator` must authorise the call. `verifier` must be a registered
-    /// verifier. `deadline` must be in the future. `milestones` must be
+    /// verifier. `token` must be on the admin approved allowlist.
+    /// `deadline` must be in the future. `milestones` must be
     /// non-empty, have at most [`MAX_MILESTONES`] entries, and every entry
     /// must be positive. The campaign's `goal` is the sum of all milestones.
     /// Emits [`CampaignCreated`].
     ///
     /// # Errors
     /// - [`Error::NotVerifier`]: `verifier` is not currently registered.
+    /// - [`Error::TokenNotAllowed`]: `token` is not on the admin allowlist.
     /// - [`Error::DeadlineInPast`]: `deadline` is not after the current
     ///   ledger timestamp.
     /// - [`Error::InvalidMilestones`]: `milestones` is empty, exceeds
@@ -395,72 +431,37 @@ impl Aidline {
         creator: Address,
         beneficiary: Address,
         verifier: Address,
+        token: Address,
         kind: CampaignKind,
         metadata_uri: String,
         deadline: u64,
         milestones: Vec<i128>,
     ) -> Result<u64, Error> {
-        creator.require_auth();
-        storage::bump_instance(&env);
-
-        if !storage::is_verifier(&env, &verifier) {
-            return Err(Error::NotVerifier);
-        }
-        if deadline <= env.ledger().timestamp() {
-            return Err(Error::DeadlineInPast);
-        }
-        if milestones.is_empty() || milestones.len() > MAX_MILESTONES {
-            return Err(Error::InvalidMilestones);
-        }
-        let mut goal: i128 = 0;
-        for amount in milestones.iter() {
-            if amount <= 0 {
-                return Err(Error::InvalidMilestones);
-            }
-            goal = goal.checked_add(amount).ok_or(Error::InvalidMilestones)?;
-        }
-
-        let id = storage::next_campaign_id(&env);
         let mut verifiers = Vec::new(&env);
         verifiers.push_back(verifier.clone());
-        let campaign = Campaign {
-            id,
-            creator: creator.clone(),
+        Self::create_multisig_campaign(
+            env,
+            creator,
             beneficiary,
-            verifier,
+            verifiers,
+            1,
+            token,
             kind,
             metadata_uri,
-            goal,
             deadline,
             milestones,
-            milestones_released: 0,
-            raised: 0,
-            released: 0,
-            status: CampaignStatus::Active,
-            emergency_advance: 0,
-            verifiers,
-            threshold: 1,
-        };
-        storage::save_campaign(&env, &campaign);
-
-        CampaignCreated {
-            campaign_id: id,
-            creator,
-            kind,
-            goal,
-            deadline,
-        }
-        .publish(&env);
-        Ok(id)
+        )
     }
 
-    /// Creates a new campaign with multiple verifiers and an approval threshold.
+    /// Creates a new campaign with multiple verifiers, an approval threshold, and a token.
     ///
     /// `threshold` verifier approvals are required before any milestone can be
     /// released. `threshold` must be between 1 and `verifiers.len()` inclusive.
     /// Every entry in `verifiers` must be currently registered and distinct.
+    /// `token` must be on the admin approved allowlist.
     ///
     /// # Errors
+    /// - [`Error::TokenNotAllowed`]: `token` is not on the allowlist.
     /// - [`Error::InvalidThreshold`]: `threshold` is 0 or exceeds `verifiers.len()`.
     /// - [`Error::DuplicateVerifier`]: `verifiers` contains duplicate addresses.
     /// - [`Error::NotVerifier`]: an address in `verifiers` is not registered.
@@ -471,6 +472,7 @@ impl Aidline {
         beneficiary: Address,
         verifiers: Vec<Address>,
         threshold: u32,
+        token: Address,
         kind: CampaignKind,
         metadata_uri: String,
         deadline: u64,
@@ -478,6 +480,10 @@ impl Aidline {
     ) -> Result<u64, Error> {
         creator.require_auth();
         storage::bump_instance(&env);
+
+        if !storage::is_token_allowed(&env, &token) {
+            return Err(Error::TokenNotAllowed);
+        }
 
         if verifiers.is_empty() || threshold == 0 || threshold > verifiers.len() {
             return Err(Error::InvalidThreshold);
@@ -515,6 +521,7 @@ impl Aidline {
             creator: creator.clone(),
             beneficiary,
             verifier: primary_verifier,
+            token,
             kind,
             metadata_uri,
             goal,
@@ -542,20 +549,12 @@ impl Aidline {
     }
 
     /// Creates a campaign with per-milestone due dates.
-    ///
-    /// Behaves identically to [`create_campaign`] and additionally stores a
-    /// due date for each milestone. `milestone_due_dates` must have the same
-    /// length as `milestones`.
-    ///
-    /// # Errors
-    /// All errors from [`create_campaign`] apply, plus:
-    /// - [`Error::InvalidMilestones`]: `milestone_due_dates` length differs
-    ///   from `milestones` length.
     pub fn create_campaign_with_due_dates(
         env: Env,
         creator: Address,
         beneficiary: Address,
         verifier: Address,
+        token: Address,
         kind: CampaignKind,
         metadata_uri: String,
         deadline: u64,
@@ -567,37 +566,7 @@ impl Aidline {
             creator,
             beneficiary,
             verifier,
-            kind,
-            metadata_uri,
-            deadline,
-            milestones.clone(),
-        )?;
-        if milestone_due_dates.len() != milestones.len() {
-            return Err(Error::InvalidMilestones);
-        }
-        storage::set_milestone_due_dates(&env, id, &milestone_due_dates);
-        Ok(id)
-    }
-
-    /// Creates a multisig campaign with per-milestone due dates.
-    pub fn create_multisig_with_due_dates(
-        env: Env,
-        creator: Address,
-        beneficiary: Address,
-        verifiers: Vec<Address>,
-        threshold: u32,
-        kind: CampaignKind,
-        metadata_uri: String,
-        deadline: u64,
-        milestones: Vec<i128>,
-        milestone_due_dates: Vec<u64>,
-    ) -> Result<u64, Error> {
-        let id = Self::create_multisig_campaign(
-            env.clone(),
-            creator,
-            beneficiary,
-            verifiers,
-            threshold,
+            token,
             kind,
             metadata_uri,
             deadline,
@@ -639,7 +608,7 @@ impl Aidline {
             return Err(Error::GoalExceeded);
         }
 
-        token::Client::new(&env, &storage::token(&env)).transfer(
+        token::Client::new(&env, &campaign.token).transfer(
             &donor,
             env.current_contract_address(),
             &amount,
@@ -706,7 +675,7 @@ impl Aidline {
             return Err(Error::SponsorPoolExists);
         }
 
-        token::Client::new(&env, &storage::token(&env)).transfer(
+        token::Client::new(&env, &campaign.token).transfer(
             &sponsor,
             env.current_contract_address(),
             &amount,
@@ -849,7 +818,7 @@ impl Aidline {
         storage::remove_sponsor_pool(&env, campaign_id, &sponsor);
 
         if remaining > 0 {
-            token::Client::new(&env, &storage::token(&env)).transfer(
+            token::Client::new(&env, &campaign.token).transfer(
                 &env.current_contract_address(),
                 &sponsor,
                 &remaining,
@@ -901,7 +870,7 @@ impl Aidline {
 
         // Verify the donor has granted sufficient allowance.
         // We do not transfer tokens here, they are pulled at milestone approval.
-        let tok = token::Client::new(&env, &storage::token(&env));
+        let tok = token::Client::new(&env, &campaign.token);
         let allowance = tok.allowance(&donor, &env.current_contract_address());
         if allowance < pledged_amount {
             return Err(Error::InvalidPledge);
@@ -977,7 +946,7 @@ impl Aidline {
         // Advance is the lesser of the 20% cap and available escrow.
         let advance = if available < cap { available } else { cap };
 
-        token::Client::new(&env, &storage::token(&env)).transfer(
+        token::Client::new(&env, &campaign.token).transfer(
             &env.current_contract_address(),
             &campaign.beneficiary,
             &advance,
@@ -1121,7 +1090,7 @@ impl Aidline {
         }
 
         if remaining > 0 {
-            token::Client::new(env, &storage::token(env)).transfer(
+            token::Client::new(env, &campaign.token).transfer(
                 &env.current_contract_address(),
                 &campaign.beneficiary,
                 &remaining,
@@ -1208,7 +1177,7 @@ impl Aidline {
 
         storage::set_contribution(&env, campaign_id, &donor, 0);
         if amount > 0 {
-            token::Client::new(&env, &storage::token(&env)).transfer(
+            token::Client::new(&env, &campaign.token).transfer(
                 &env.current_contract_address(),
                 &donor,
                 &amount,
@@ -1366,7 +1335,7 @@ impl Aidline {
         pledge_count: u64,
         campaign: &mut Campaign,
     ) -> i128 {
-        let tok = token::Client::new(env, &storage::token(env));
+        let tok = token::Client::new(env, &campaign.token);
         let contract_addr = env.current_contract_address();
 
         // Phase 1: gather active pledges for this campaign.
