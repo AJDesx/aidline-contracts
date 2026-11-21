@@ -38,4 +38,12 @@ pub enum Error {
     NotEmergencyCampaign = 24,
     AdvanceAlreadyTaken = 25,
     AdvanceExceedsEscrow = 26,
+
+    // Issue #9: multisig verification
+    InvalidThreshold = 27,
+    DuplicateApproval = 28,
+    DuplicateVerifier = 29,
+
+    // Issue #10: per-campaign token allowlist
+    TokenNotAllowed = 30,
 }

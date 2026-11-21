@@ -373,3 +373,44 @@ impl EmergencyAdvanceReleased {
         );
     }
 }
+
+// ─── Issue #9: Multisig milestone approved event ───────────────────────────
+
+/// Emitted when a verifier records their approval for a milestone.
+pub struct MilestoneApproved {
+    pub campaign_id: u64,
+    pub milestone_index: u32,
+    pub verifier: Address,
+    pub approvals_count: u32,
+    pub threshold: u32,
+}
+
+impl MilestoneApproved {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (
+                symbol_short!("approved"),
+                self.campaign_id,
+                self.milestone_index,
+            ),
+            (self.verifier.clone(), self.approvals_count, self.threshold),
+        );
+    }
+}
+
+// ─── Issue #10: Token allowlist updated event ───────────────────────────────
+
+/// Emitted when the admin adds or removes a token from the campaign allowlist.
+pub struct TokenAllowlistUpdated {
+    pub token: Address,
+    pub allowed: bool,
+}
+
+impl TokenAllowlistUpdated {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("tok_allow"), self.token.clone()),
+            self.allowed,
+        );
+    }
+}

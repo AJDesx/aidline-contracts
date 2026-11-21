@@ -247,6 +247,7 @@ fuzz_target!(|data: &[u8]| {
         &creator,
         &beneficiary,
         &verifier,
+        &sac.address(),
         &CampaignKind::Emergency,
         &SorobanString::from_str(&env, "ipfs://fuzz"),
         &deadline,
