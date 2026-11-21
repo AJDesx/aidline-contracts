@@ -1635,3 +1635,13 @@ fn test_view_token() {
     let s = Setup::new();
     assert_eq!(s.client.token(), s.token.address);
 }
+
+#[test]
+fn test_view_version() {
+    let s = Setup::new();
+    assert_eq!(
+        s.client.version(),
+        String::from_str(&s.env, env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(s.client.version(), String::from_str(&s.env, "0.1.0"));
+}

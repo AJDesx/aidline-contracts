@@ -61,7 +61,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for storage layout, events, and
 | `approve_milestone(campaign_id, proof_uri)` | campaign verifier | Releases the next milestone |
 | `cancel_campaign(caller, campaign_id)` | creator or admin | Stops the campaign and opens refunds |
 | `refund(donor, campaign_id)` | donor | Claims a pro rata refund after cancel or expiry |
-| `get_campaign`, `campaign_count`, `contribution_of`, `is_verifier`, `admin`, `token` | anyone | Read only views |
+| `get_campaign`, `campaign_count`, `contribution_of`, `is_verifier`, `admin`, `token`, `version` | anyone | Read only views |
 
 Error codes are listed in [`errors.rs`](contracts/aidline/src/errors.rs).
 

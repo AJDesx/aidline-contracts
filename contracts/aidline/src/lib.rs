@@ -1282,6 +1282,11 @@ impl Aidline {
         storage::token(&env)
     }
 
+    /// Returns the crate version of the deployed contract.
+    pub fn version(env: Env) -> String {
+        String::from_str(&env, env!("CARGO_PKG_VERSION"))
+    }
+
     /// Returns the [`SponsorPool`] for `sponsor` on `campaign_id`, or `None`.
     pub fn get_sponsor_pool(env: Env, campaign_id: u64, sponsor: Address) -> Option<SponsorPool> {
         storage::sponsor_pool(&env, campaign_id, &sponsor)
