@@ -1214,3 +1214,45 @@ fn a_pledge_moves_no_money_until_a_milestone_is_approved() {
     assert_eq!(s.token.balance(&s.beneficiary), 300);
     assert_eq!(s.client.get_pledge(&pledge_id).unwrap().pulled_amount, 300);
 }
+
+#[test]
+fn extend_campaign_ttl_allows_entry_to_survive_past_original_ttl() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    // Verify initial campaign exists
+    let initial = s.client.get_campaign(&id);
+    assert_eq!(initial.id, id);
+
+    // 120 days in ledgers = 120 * 17_280 = 2_073_600
+    let day_in_ledgers = 17_280;
+
+    // Advance sequence number to day 100
+    s.env.ledger().set_sequence_number(100 * day_in_ledgers);
+
+    // Extend TTL publicly without any auth
+    s.client.extend_campaign_ttl(&id);
+
+    // Advance past the original 120-day persistent lifetime (to day 150)
+    s.env.ledger().set_sequence_number(150 * day_in_ledgers);
+
+    // The campaign entry survives because its TTL was extended
+    let campaign = s.client.get_campaign(&id);
+    assert_eq!(campaign.id, id);
+    assert_eq!(campaign.goal, 1000);
+}
+
+#[test]
+fn extend_campaign_ttl_validates_existence_and_requires_no_auth() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    // Non-existent campaign returns CampaignNotFound
+    assert_eq!(
+        s.client.try_extend_campaign_ttl(&9999),
+        Err(Ok(Error::CampaignNotFound))
+    );
+
+    // Any caller can extend TTL without specific authorization
+    assert_eq!(s.client.try_extend_campaign_ttl(&id), Ok(Ok(())));
+}

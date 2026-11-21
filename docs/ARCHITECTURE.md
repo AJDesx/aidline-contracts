@@ -71,7 +71,7 @@ This provides critical funds in the first hours of a disaster without waiting fo
 | `PledgeCount` | instance | `u64` next pledge id (Issue #30) |
 | `Pledge(u64)` | persistent | `Pledge` struct (Issue #30) |
 
-TTLs are extended on every read and write (instance: 30 days, persistent: 120 days). Long running climate campaigns may need an off chain keeper to extend TTLs; this is tracked as an open issue.
+TTLs are extended on every read and write (instance: 30 days, persistent: 120 days). For long-running campaigns (such as multi-year climate projects) that may remain quiet for months, anyone (such as an off-chain keeper or backend worker) can call the public `extend_campaign_ttl(campaign_id)` entry point without authorization to bump the persistent entry TTL by another 120 days and prevent expiration.
 
 ## Refund math
 

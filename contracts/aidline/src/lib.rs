@@ -1109,6 +1109,18 @@ impl Aidline {
         storage::campaign(&env, campaign_id)
     }
 
+    /// Extends the persistent storage TTL for `campaign_id`.
+    ///
+    /// Designed for long-running campaigns (e.g. climate projects) that may experience
+    /// prolonged quiet periods. Can be called by anyone without authorization, allowing
+    /// off-chain keepers or backend services to periodically ensure the campaign entry survives.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn extend_campaign_ttl(env: Env, campaign_id: u64) -> Result<(), Error> {
+        storage::extend_campaign_ttl(&env, campaign_id)
+    }
+
     /// Returns the total number of campaigns created (also the next campaign ID).
     pub fn campaign_count(env: Env) -> u64 {
         storage::campaign_count(&env)
