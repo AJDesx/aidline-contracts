@@ -414,3 +414,27 @@ impl TokenAllowlistUpdated {
         );
     }
 }
+
+// ─── Emergency pause events ──────────────────────────────────────────────────
+
+pub struct ContractPaused {
+    pub admin: Address,
+}
+
+impl ContractPaused {
+    pub fn publish(&self, env: &Env) {
+        env.events()
+            .publish((symbol_short!("paused"), self.admin.clone()), ());
+    }
+}
+
+pub struct ContractUnpaused {
+    pub admin: Address,
+}
+
+impl ContractUnpaused {
+    pub fn publish(&self, env: &Env) {
+        env.events()
+            .publish((symbol_short!("unpaused"), self.admin.clone()), ());
+    }
+}

@@ -13,7 +13,7 @@ This document explains how the Aidline contract is put together and why. If you 
 
 | Role | Powers |
 | --- | --- |
-| Admin | Adds and removes verifiers, can cancel any campaign, can hand admin to another address, can slash verifier bonds |
+| Admin | Adds and removes verifiers, can cancel any campaign, can hand admin to another address, can slash verifier bonds, can pause/unpause for emergencies |
 | Creator | Opens campaigns, can cancel their own campaign |
 | Beneficiary | Receives milestone payouts. Often the same as the creator, but can be a separate NGO wallet |
 | Verifier | Approves milestones for campaigns assigned to them, while registered by the admin. Must post a bond to register. |
@@ -54,6 +54,15 @@ This provides critical funds in the first hours of a disaster without waiting fo
 - **Accounting:** The advance is recorded against milestone one (`milestones[0]`). When the verifier later formally approves milestone one, the contract only transfers the remaining balance (if any) of that milestone to the beneficiary. The total funds released for milestone one never exceed its scheduled amount.
 - **Security:** Only the registered verifier can trigger the fast track. It is only available for `Emergency` campaigns, and only once per campaign.
 
+## Emergency Pause Switch
+
+In case an exploit or critical bug is discovered, the admin can pause state-mutating operations using `pause` and resume them using `unpause`.
+
+- **Blocked functions:** While paused, `donate`, `approve_milestone` (including multisig approvals), `emergency_fast_track`, and `create_campaign` (including multisig and due dates creation) reject immediately with `Error::Paused`.
+- **Refunds always allowed:** `refund` is never blocked by the pause switch. Donors can always withdraw unreleased funds if a campaign has been cancelled, expired, or had an overdue milestone.
+- **View functions:** View functions (`get_campaign`, `is_paused`, etc.) remain accessible at all times.
+- **Events:** `paused` and `unpaused` are emitted with the acting admin address.
+
 ## Storage
 
 | Key | Storage type | Value |
@@ -71,6 +80,7 @@ This provides critical funds in the first hours of a disaster without waiting fo
 | `PledgeCount` | instance | `u64` next pledge id (Issue #30) |
 | `Pledge(u64)` | persistent | `Pledge` struct (Issue #30) |
 | `MilestoneApprovals(u64, u32)` | persistent | `Vec<Address>` approved verifiers for milestone |
+| `Paused` | instance | `bool`, true when contract is paused in emergencies |
 
 TTLs are extended on every read and write (instance: 30 days, persistent: 120 days). For long-running campaigns (such as multi-year climate projects) that may remain quiet for months, anyone (such as an off-chain keeper or backend worker) can call the public `extend_campaign_ttl(campaign_id)` entry point without authorization to bump the persistent entry TTL by another 120 days and prevent expiration.
 
@@ -111,6 +121,8 @@ Sponsors are also included in the refund pool (their `Contribution` entry tracks
 | `pledge_settlement` | `campaign_id` | `milestone_index`, `total_pledged_pulled` |
 | `verifier_reassigned` | `campaign_id` | `old_verifier`, `new_verifier` |
 | `approved` | `campaign_id`, `milestone_index` | `verifier`, `approvals_count`, `threshold` |
+| `paused` | `admin` | none |
+| `unpaused` | `admin` | none |
 
 The backend indexer reads these to build campaign pages, donor histories and impact reports without scanning contract storage.
 

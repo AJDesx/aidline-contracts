@@ -46,4 +46,7 @@ pub enum Error {
 
     // Issue #10: per-campaign token allowlist
     TokenNotAllowed = 30,
+
+    // Emergency pause switch
+    Paused = 31,
 }

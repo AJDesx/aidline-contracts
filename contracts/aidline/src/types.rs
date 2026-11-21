@@ -153,4 +153,6 @@ pub enum DataKey {
     MilestoneApprovals(u64, u32),
     // Issue #10: token allowlist
     AllowedToken(Address),
+    // Emergency pause switch
+    Paused,
 }

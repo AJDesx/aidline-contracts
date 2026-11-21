@@ -23,11 +23,11 @@ pub use types::{
 };
 
 use events::{
-    AdminChanged, BondSlashed, BondWithdrawn, CampaignCancelled, CampaignCreated, Donated,
-    EmergencyAdvanceReleased, MatchingApplied, MilestoneApproved, MilestoneReleased, PledgeCreated,
-    PledgePulled, PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited,
-    SponsorPoolReturned, TokenAllowlistUpdated, VerifierBondPosted, VerifierDeregistered,
-    VerifierReassigned, VerifierUpdated,
+    AdminChanged, BondSlashed, BondWithdrawn, CampaignCancelled, CampaignCreated, ContractPaused,
+    ContractUnpaused, Donated, EmergencyAdvanceReleased, MatchingApplied, MilestoneApproved,
+    MilestoneReleased, PledgeCreated, PledgePulled, PledgeSettlement, PledgeSkipped, Refunded,
+    SponsorPoolDeposited, SponsorPoolReturned, TokenAllowlistUpdated, VerifierBondPosted,
+    VerifierDeregistered, VerifierReassigned, VerifierUpdated,
 };
 
 const MAX_MILESTONES: u32 = 20;
@@ -119,6 +119,34 @@ impl Aidline {
             new: new_admin,
         }
         .publish(&env);
+    }
+
+    /// Pauses the contract in emergencies.
+    ///
+    /// Only the admin may call this. While paused, `donate`, `approve_milestone`,
+    /// `create_campaign`, and `emergency_fast_track` fail with [`Error::Paused`].
+    /// Refunds keep working so donors are never locked in. Emits [`ContractPaused`].
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the admin.
+    pub fn pause(env: Env) {
+        let admin = storage::admin(&env);
+        admin.require_auth();
+        storage::set_paused(&env, true);
+        ContractPaused { admin }.publish(&env);
+    }
+
+    /// Unpauses the contract, restoring normal operation.
+    ///
+    /// Only the admin may call this. Emits [`ContractUnpaused`].
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the admin.
+    pub fn unpause(env: Env) {
+        let admin = storage::admin(&env);
+        admin.require_auth();
+        storage::set_paused(&env, false);
+        ContractUnpaused { admin }.publish(&env);
     }
 
     // ─── Token Allowlist (admin only) ─────────────────────────────────────────
@@ -481,6 +509,10 @@ impl Aidline {
         creator.require_auth();
         storage::bump_instance(&env);
 
+        if storage::is_paused(&env) {
+            return Err(Error::Paused);
+        }
+
         if !storage::is_token_allowed(&env, &token) {
             return Err(Error::TokenNotAllowed);
         }
@@ -597,6 +629,9 @@ impl Aidline {
     /// - [`Error::GoalExceeded`]: campaign is already fully funded.
     pub fn donate(env: Env, donor: Address, campaign_id: u64, amount: i128) -> Result<i128, Error> {
         donor.require_auth();
+        if storage::is_paused(&env) {
+            return Err(Error::Paused);
+        }
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -926,6 +961,10 @@ impl Aidline {
         let mut campaign = storage::campaign(&env, campaign_id)?;
         campaign.verifier.require_auth();
 
+        if storage::is_paused(&env) {
+            return Err(Error::Paused);
+        }
+
         // Only Emergency campaigns may use the fast track.
         if campaign.kind != CampaignKind::Emergency {
             return Err(Error::NotEmergencyCampaign);
@@ -1030,6 +1069,10 @@ impl Aidline {
         proof_uri: String,
     ) -> Result<i128, Error> {
         verifier.require_auth();
+
+        if storage::is_paused(env) {
+            return Err(Error::Paused);
+        }
 
         let mut campaign = storage::campaign(env, campaign_id)?;
         if !campaign.verifiers.contains(&verifier) {
@@ -1322,6 +1365,11 @@ impl Aidline {
         milestone_index: u32,
     ) -> Vec<Address> {
         storage::milestone_approvals(&env, campaign_id, milestone_index)
+    }
+
+    /// Returns `true` if the contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        storage::is_paused(&env)
     }
 
     // ─── Internal ─────────────────────────────────────────────────────────────
