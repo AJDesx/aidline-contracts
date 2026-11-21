@@ -451,3 +451,19 @@ impl ContractUpgraded {
             .publish((symbol_short!("upgraded"),), self.new_wasm_hash.clone());
     }
 }
+
+// ─── Metadata update event ───────────────────────────────────────────────────
+
+pub struct MetadataUpdated {
+    pub campaign_id: u64,
+    pub new_metadata_uri: String,
+}
+
+impl MetadataUpdated {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("meta_upd"), self.campaign_id),
+            self.new_metadata_uri.clone(),
+        );
+    }
+}

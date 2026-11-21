@@ -49,4 +49,7 @@ pub enum Error {
 
     // Emergency pause switch
     Paused = 31,
+
+    // Metadata update
+    DonationsAlreadyStarted = 32,
 }

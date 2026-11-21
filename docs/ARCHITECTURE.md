@@ -146,6 +146,7 @@ Sponsors are also included in the refund pool (their `Contribution` entry tracks
 | `paused` | `admin` | none |
 | `unpaused` | `admin` | none |
 | `upgraded` | none | `new_wasm_hash` |
+| `meta_upd` | `campaign_id` | `new_metadata_uri` |
 
 The backend indexer reads these to build campaign pages, donor histories and impact reports without scanning contract storage.
 

@@ -27,9 +27,10 @@ pub use types::{
 use events::{
     AdminChanged, BondSlashed, BondWithdrawn, CampaignCancelled, CampaignCreated, ContractPaused,
     ContractUnpaused, ContractUpgraded, Donated, EmergencyAdvanceReleased, MatchingApplied,
-    MilestoneApproved, MilestoneReleased, PledgeCreated, PledgePulled, PledgeSettlement,
-    PledgeSkipped, Refunded, SponsorPoolDeposited, SponsorPoolReturned, TokenAllowlistUpdated,
-    VerifierBondPosted, VerifierDeregistered, VerifierReassigned, VerifierUpdated,
+    MetadataUpdated, MilestoneApproved, MilestoneReleased, PledgeCreated, PledgePulled,
+    PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited, SponsorPoolReturned,
+    TokenAllowlistUpdated, VerifierBondPosted, VerifierDeregistered, VerifierReassigned,
+    VerifierUpdated,
 };
 
 const MAX_MILESTONES: u32 = 20;
@@ -626,6 +627,41 @@ impl Aidline {
         }
         storage::set_milestone_due_dates(&env, id, &milestone_due_dates);
         Ok(id)
+    }
+
+    /// Updates the off-chain metadata URI for `campaign_id`.
+    ///
+    /// Only the campaign's creator may call this, and only before any
+    /// donations have been received (`raised == 0`). Emits [`MetadataUpdated`].
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    /// - [`Error::CampaignNotActive`]: campaign is not currently active.
+    /// - [`Error::CampaignExpired`]: campaign deadline has passed.
+    /// - [`Error::DonationsAlreadyStarted`]: campaign has already received donations.
+    pub fn update_metadata(
+        env: Env,
+        campaign_id: u64,
+        new_metadata_uri: String,
+    ) -> Result<(), Error> {
+        let mut campaign = storage::campaign(&env, campaign_id)?;
+        campaign.creator.require_auth();
+        Self::ensure_open(&env, &campaign)?;
+
+        if campaign.raised > 0 {
+            return Err(Error::DonationsAlreadyStarted);
+        }
+
+        campaign.metadata_uri = new_metadata_uri.clone();
+        storage::save_campaign(&env, &campaign);
+
+        MetadataUpdated {
+            campaign_id,
+            new_metadata_uri,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     /// Donates `amount` tokens from `donor` to `campaign_id`.
