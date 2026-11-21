@@ -15,7 +15,9 @@ mod types;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{Address, Env, String, Vec, contract, contractimpl, token};
+use soroban_sdk::{
+    Address, BytesN, ContractExecutable, Env, String, Vec, contract, contractimpl, token,
+};
 
 pub use errors::Error;
 pub use types::{
@@ -24,10 +26,10 @@ pub use types::{
 
 use events::{
     AdminChanged, BondSlashed, BondWithdrawn, CampaignCancelled, CampaignCreated, ContractPaused,
-    ContractUnpaused, Donated, EmergencyAdvanceReleased, MatchingApplied, MilestoneApproved,
-    MilestoneReleased, PledgeCreated, PledgePulled, PledgeSettlement, PledgeSkipped, Refunded,
-    SponsorPoolDeposited, SponsorPoolReturned, TokenAllowlistUpdated, VerifierBondPosted,
-    VerifierDeregistered, VerifierReassigned, VerifierUpdated,
+    ContractUnpaused, ContractUpgraded, Donated, EmergencyAdvanceReleased, MatchingApplied,
+    MilestoneApproved, MilestoneReleased, PledgeCreated, PledgePulled, PledgeSettlement,
+    PledgeSkipped, Refunded, SponsorPoolDeposited, SponsorPoolReturned, TokenAllowlistUpdated,
+    VerifierBondPosted, VerifierDeregistered, VerifierReassigned, VerifierUpdated,
 };
 
 const MAX_MILESTONES: u32 = 20;
@@ -147,6 +149,21 @@ impl Aidline {
         admin.require_auth();
         storage::set_paused(&env, false);
         ContractUnpaused { admin }.publish(&env);
+    }
+
+    /// Upgrades the contract's Wasm executable to `new_wasm_hash`.
+    ///
+    /// Only the current admin may call this. The new Wasm code must already
+    /// be installed on-chain. Emits [`ContractUpgraded`].
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the admin.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        let admin = storage::admin(&env);
+        admin.require_auth();
+        env.deployer()
+            .update_current_contract(ContractExecutable::Wasm(new_wasm_hash.clone()));
+        ContractUpgraded { new_wasm_hash }.publish(&env);
     }
 
     // ─── Token Allowlist (admin only) ─────────────────────────────────────────

@@ -1,6 +1,6 @@
 #![allow(deprecated)]
 
-use soroban_sdk::{Address, Env, String, symbol_short};
+use soroban_sdk::{Address, BytesN, Env, String, symbol_short};
 
 use crate::types::CampaignKind;
 
@@ -436,5 +436,18 @@ impl ContractUnpaused {
     pub fn publish(&self, env: &Env) {
         env.events()
             .publish((symbol_short!("unpaused"), self.admin.clone()), ());
+    }
+}
+
+// ─── Upgrade event ───────────────────────────────────────────────────────────
+
+pub struct ContractUpgraded {
+    pub new_wasm_hash: BytesN<32>,
+}
+
+impl ContractUpgraded {
+    pub fn publish(&self, env: &Env) {
+        env.events()
+            .publish((symbol_short!("upgraded"),), self.new_wasm_hash.clone());
     }
 }

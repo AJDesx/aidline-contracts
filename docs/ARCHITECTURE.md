@@ -13,7 +13,7 @@ This document explains how the Aidline contract is put together and why. If you 
 
 | Role | Powers |
 | --- | --- |
-| Admin | Adds and removes verifiers, can cancel any campaign, can hand admin to another address, can slash verifier bonds, can pause/unpause for emergencies |
+| Admin | Adds and removes verifiers, can cancel any campaign, can hand admin to another address, can slash verifier bonds, can pause/unpause for emergencies, can upgrade contract code |
 | Creator | Opens campaigns, can cancel their own campaign |
 | Beneficiary | Receives milestone payouts. Often the same as the creator, but can be a separate NGO wallet |
 | Verifier | Approves milestones for campaigns assigned to them, while registered by the admin. Must post a bond to register. |
@@ -62,6 +62,28 @@ In case an exploit or critical bug is discovered, the admin can pause state-muta
 - **Refunds always allowed:** `refund` is never blocked by the pause switch. Donors can always withdraw unreleased funds if a campaign has been cancelled, expired, or had an overdue milestone.
 - **View functions:** View functions (`get_campaign`, `is_paused`, etc.) remain accessible at all times.
 - **Events:** `paused` and `unpaused` are emitted with the acting admin address.
+
+## Contract Upgrades
+
+Aidline provides an admin-controlled upgrade path via `upgrade(new_wasm_hash)` so that bugs can be fixed or features added without abandoning existing campaign history and escrow balances.
+
+### Upgrade Procedure
+
+1. **Build and Validate**: Compile and test the new contract code locally (`cargo test`, `stellar contract build`).
+2. **Optional Pause**: For high-risk upgrades, the admin may call `pause()` to freeze donations and milestone payouts while preserving refunds.
+3. **Install Bytecode**: Install the new Wasm binary onto the network using the Stellar CLI:
+   ```sh
+   stellar contract install --wasm target/wasm32v1-none/release/aidline.wasm --source admin
+   ```
+   This stores the bytecode on-chain and outputs its 32-byte Wasm hash (`new_wasm_hash`).
+4. **Trigger Upgrade**: The admin calls `upgrade(new_wasm_hash)` on the contract. The contract verifies admin authorization, updates the contract executable via `update_current_contract`, and emits the `upgraded` event.
+5. **Post-Upgrade Verification**: Verify that existing campaign state and storage remain intact, then call `unpause()` if the contract was paused.
+
+### Trust Implications and Security
+
+- **Centralized Control**: The upgrade path gives the admin address the authority to replace contract logic. Donors and beneficiaries must trust the admin not to deploy malicious or compromised bytecode.
+- **State Preservation**: In Soroban, updating the contract executable preserves all instance and persistent storage entries (campaigns, contributions, bonds, pledges). New contract versions must remain schema-compatible with existing storage keys.
+- **Mitigation**: In production deployments, admin control should be transferred to a multisig account, a timelock contract, or a DAO to mitigate single-key compromise risks.
 
 ## Storage
 
@@ -123,6 +145,7 @@ Sponsors are also included in the refund pool (their `Contribution` entry tracks
 | `approved` | `campaign_id`, `milestone_index` | `verifier`, `approvals_count`, `threshold` |
 | `paused` | `admin` | none |
 | `unpaused` | `admin` | none |
+| `upgraded` | none | `new_wasm_hash` |
 
 The backend indexer reads these to build campaign pages, donor histories and impact reports without scanning contract storage.
 
