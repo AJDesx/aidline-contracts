@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use proptest::prelude::*;
 use soroban_sdk::{
     Address, Env, String,
     testutils::{Address as _, Events as _, Ledger},
@@ -167,18 +168,54 @@ fn donations_are_held_in_escrow() {
 }
 
 #[test]
-fn donation_cannot_exceed_goal() {
+fn donation_accepts_partial_amount_when_passing_goal() {
     let s = Setup::new();
-    let id = s.campaign();
+    let id = s.campaign(); // goal 1000
     let donor = s.donor(2000);
 
+    // Donating 1500 to a 1000-goal campaign accepts 1000, transfers only 1000, returns 1000
+    let accepted = s.client.donate(&donor, &id, &1500);
+    assert_eq!(accepted, 1000);
+    assert_eq!(s.token.balance(&donor), 1000);
+    assert_eq!(s.token.balance(&s.client.address), 1000);
+    assert_eq!(s.client.get_campaign(&id).raised, 1000);
+    assert_eq!(s.client.contribution_of(&id, &donor), 1000);
+
+    // Fully funded campaign now rejects subsequent donations
     assert_eq!(
-        s.client.try_donate(&donor, &id, &1001),
+        s.client.try_donate(&donor, &id, &10),
         Err(Ok(Error::GoalExceeded))
     );
     assert_eq!(
         s.client.try_donate(&donor, &id, &0),
         Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn donation_partial_acceptance_with_existing_raised() {
+    let s = Setup::new();
+    let id = s.campaign(); // goal 1000
+    let donor_a = s.donor(1000);
+    let donor_b = s.donor(1000);
+
+    // Donor A donates 700 (exact)
+    let accepted_a = s.client.donate(&donor_a, &id, &700);
+    assert_eq!(accepted_a, 700);
+    assert_eq!(s.token.balance(&donor_a), 300);
+
+    // Donor B offers 500 when only 300 is needed
+    let accepted_b = s.client.donate(&donor_b, &id, &500);
+    assert_eq!(accepted_b, 300);
+    assert_eq!(s.token.balance(&donor_b), 700); // only 300 deducted
+    assert_eq!(s.client.get_campaign(&id).raised, 1000);
+    assert_eq!(s.client.contribution_of(&id, &donor_b), 300);
+
+    // Now campaign is fully funded, rejects any further donations
+    let donor_c = s.donor(100);
+    assert_eq!(
+        s.client.try_donate(&donor_c, &id, &50),
+        Err(Ok(Error::GoalExceeded))
     );
 }
 

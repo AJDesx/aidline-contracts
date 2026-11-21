@@ -83,6 +83,16 @@ pub fn campaign(env: &Env, id: u64) -> Result<Campaign, Error> {
     Ok(campaign)
 }
 
+/// Extends the storage TTL for the campaign entry identified by `id`.
+pub fn extend_campaign_ttl(env: &Env, id: u64) -> Result<(), Error> {
+    let key = DataKey::Campaign(id);
+    if !env.storage().persistent().has(&key) {
+        return Err(Error::CampaignNotFound);
+    }
+    bump(env, &key);
+    Ok(())
+}
+
 pub fn save_campaign(env: &Env, campaign: &Campaign) {
     let key = DataKey::Campaign(campaign.id);
     env.storage().persistent().set(&key, campaign);

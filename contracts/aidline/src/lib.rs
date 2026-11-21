@@ -581,18 +581,21 @@ impl Aidline {
 
     /// Donates `amount` tokens from `donor` to `campaign_id`.
     ///
-    /// Tokens are transferred immediately into the contract's escrow. The
-    /// campaign must be active and not expired. The total raised after this
-    /// donation must not exceed the campaign goal. Emits [`Donated`].
+    /// Accepts up to the remaining amount needed to reach the campaign goal
+    /// (`min(amount, goal - raised)`). Only that accepted amount is transferred
+    /// into escrow, and the accepted amount is returned.
+    ///
+    /// The campaign must be active and not expired. If the campaign is already
+    /// fully funded (`raised >= goal`), the call fails with [`Error::GoalExceeded`].
+    /// Emits [`Donated`] with the accepted amount.
     ///
     /// # Errors
-    /// - [`Error::InvalidAmount`]: `amount` is zero or negative, or the
-    ///   addition to `campaign.raised` overflows.
+    /// - [`Error::InvalidAmount`]: `amount` is zero or negative.
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
     /// - [`Error::CampaignNotActive`]: campaign is not in `Active` status.
     /// - [`Error::CampaignExpired`]: campaign deadline has passed.
-    /// - [`Error::GoalExceeded`]: donation would push `raised` above `goal`.
-    pub fn donate(env: Env, donor: Address, campaign_id: u64, amount: i128) -> Result<(), Error> {
+    /// - [`Error::GoalExceeded`]: campaign is already fully funded.
+    pub fn donate(env: Env, donor: Address, campaign_id: u64, amount: i128) -> Result<i128, Error> {
         donor.require_auth();
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -600,33 +603,33 @@ impl Aidline {
 
         let mut campaign = storage::campaign(&env, campaign_id)?;
         Self::ensure_open(&env, &campaign)?;
-        let raised = campaign
-            .raised
-            .checked_add(amount)
-            .ok_or(Error::InvalidAmount)?;
-        if raised > campaign.goal {
+
+        if campaign.raised >= campaign.goal {
             return Err(Error::GoalExceeded);
         }
 
         token::Client::new(&env, &campaign.token).transfer(
             &donor,
             env.current_contract_address(),
-            &amount,
+            &accepted,
         );
 
-        campaign.raised = raised;
+        campaign.raised = campaign
+            .raised
+            .checked_add(accepted)
+            .ok_or(Error::InvalidAmount)?;
         storage::save_campaign(&env, &campaign);
         let previous = storage::contribution(&env, campaign_id, &donor);
-        storage::set_contribution(&env, campaign_id, &donor, previous + amount);
+        storage::set_contribution(&env, campaign_id, &donor, previous + accepted);
 
         Donated {
             campaign_id,
             donor: donor.clone(),
-            amount,
+            amount: accepted,
         }
         .publish(&env);
 
-        Ok(())
+        Ok(accepted)
     }
 
     // ─── Sponsor matching ─────────────────────────────────────────────────────
@@ -1255,6 +1258,18 @@ impl Aidline {
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
     pub fn get_campaign(env: Env, campaign_id: u64) -> Result<Campaign, Error> {
         storage::campaign(&env, campaign_id)
+    }
+
+    /// Extends the persistent storage TTL for `campaign_id`.
+    ///
+    /// Designed for long-running campaigns (e.g. climate projects) that may experience
+    /// prolonged quiet periods. Can be called by anyone without authorization, allowing
+    /// off-chain keepers or backend services to periodically ensure the campaign entry survives.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn extend_campaign_ttl(env: Env, campaign_id: u64) -> Result<(), Error> {
+        storage::extend_campaign_ttl(&env, campaign_id)
     }
 
     /// Returns the total number of campaigns created (also the next campaign ID).

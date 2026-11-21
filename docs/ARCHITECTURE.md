@@ -72,7 +72,7 @@ This provides critical funds in the first hours of a disaster without waiting fo
 | `Pledge(u64)` | persistent | `Pledge` struct (Issue #30) |
 | `MilestoneApprovals(u64, u32)` | persistent | `Vec<Address>` approved verifiers for milestone |
 
-TTLs are extended on every read and write (instance: 30 days, persistent: 120 days). Long running climate campaigns may need an off chain keeper to extend TTLs; this is tracked as an open issue.
+TTLs are extended on every read and write (instance: 30 days, persistent: 120 days). For long-running campaigns (such as multi-year climate projects) that may remain quiet for months, anyone (such as an off-chain keeper or backend worker) can call the public `extend_campaign_ttl(campaign_id)` entry point without authorization to bump the persistent entry TTL by another 120 days and prevent expiration.
 
 ## Refund math
 
@@ -116,7 +116,7 @@ The backend indexer reads these to build campaign pages, donor histories and imp
 
 ## Design decisions
 
-**Donations are capped at the goal.** This keeps milestone math exact. Allowing overfunding (with the surplus going to a reserve or back to donors) is a planned improvement.
+**Donations accept up to the remaining goal amount.** A donation exceeding the remaining goal accepts `min(amount, goal - raised)`, transfers only that accepted amount into escrow, and returns it. Once a campaign is fully funded (`raised == goal`), subsequent donations reject with `GoalExceeded`. This keeps milestone math exact without rejecting generous donors.
 
 **Milestones are released strictly in order.** Partial or parallel milestones add complexity that the MVP does not need.
 
