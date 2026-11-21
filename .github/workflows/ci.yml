@@ -30,6 +30,17 @@ jobs:
           stellar --version
       - name: Build WASM
         run: stellar contract build
+      - name: Generate TypeScript bindings
+        run: |
+          stellar contract bindings typescript \
+            --wasm target/wasm32v1-none/release/aidline.wasm \
+            --output-dir packages/aidline-bindings \
+            --overwrite
+      - name: Upload TypeScript bindings artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aidline-typescript-bindings
+          path: packages/aidline-bindings
 
   audit:
     # Fails the build when a dependency has a published security advisory.
