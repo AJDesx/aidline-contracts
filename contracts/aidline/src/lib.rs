@@ -608,6 +608,9 @@ impl Aidline {
             return Err(Error::GoalExceeded);
         }
 
+        let remaining = campaign.goal - campaign.raised;
+        let accepted = amount.min(remaining);
+
         token::Client::new(&env, &campaign.token).transfer(
             &donor,
             env.current_contract_address(),
