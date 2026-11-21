@@ -52,4 +52,8 @@ pub enum Error {
 
     // Metadata update
     DonationsAlreadyStarted = 32,
+
+    // Deadline extension
+    DeadlineAlreadyExtended = 33,
+    InvalidDeadlineExtension = 34,
 }

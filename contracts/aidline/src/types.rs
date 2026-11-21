@@ -54,6 +54,8 @@ pub struct Campaign {
     pub verifiers: Vec<Address>,
     /// Minimum number of independent verifier approvals needed to release a milestone.
     pub threshold: u32,
+    /// Whether the campaign deadline has already been extended (one-time only).
+    pub deadline_extended: bool,
 }
 
 /// A sponsor matching pool for a specific campaign.

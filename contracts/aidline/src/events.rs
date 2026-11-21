@@ -467,3 +467,20 @@ impl MetadataUpdated {
         );
     }
 }
+
+// ─── Deadline extension event ────────────────────────────────────────────────
+
+pub struct DeadlineExtended {
+    pub campaign_id: u64,
+    pub old_deadline: u64,
+    pub new_deadline: u64,
+}
+
+impl DeadlineExtended {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("dl_ext"), self.campaign_id),
+            (self.old_deadline, self.new_deadline),
+        );
+    }
+}

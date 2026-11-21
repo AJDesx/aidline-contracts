@@ -26,11 +26,11 @@ pub use types::{
 
 use events::{
     AdminChanged, BondSlashed, BondWithdrawn, CampaignCancelled, CampaignCreated, ContractPaused,
-    ContractUnpaused, ContractUpgraded, Donated, EmergencyAdvanceReleased, MatchingApplied,
-    MetadataUpdated, MilestoneApproved, MilestoneReleased, PledgeCreated, PledgePulled,
-    PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited, SponsorPoolReturned,
-    TokenAllowlistUpdated, VerifierBondPosted, VerifierDeregistered, VerifierReassigned,
-    VerifierUpdated,
+    ContractUnpaused, ContractUpgraded, DeadlineExtended, Donated, EmergencyAdvanceReleased,
+    MatchingApplied, MetadataUpdated, MilestoneApproved, MilestoneReleased, PledgeCreated,
+    PledgePulled, PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited,
+    SponsorPoolReturned, TokenAllowlistUpdated, VerifierBondPosted, VerifierDeregistered,
+    VerifierReassigned, VerifierUpdated,
 };
 
 const MAX_MILESTONES: u32 = 20;
@@ -40,6 +40,9 @@ const MAX_RATIO_BPS: u32 = 10_000;
 const SKIP_REASON_NO_ALLOWANCE: u32 = 1;
 /// Reason code emitted in PledgeSkipped when the pledge is fully consumed.
 const SKIP_REASON_EXHAUSTED: u32 = 2;
+
+/// Maximum duration (in seconds) for a one-time deadline extension (30 days).
+const MAX_DEADLINE_EXTENSION: u64 = 30 * 86_400;
 
 /// The emergency advance is capped at 20% of the campaign goal (200 bps out of
 /// 1000, or equivalently goal / 5).  Integer arithmetic: advance = goal / 5
@@ -584,6 +587,7 @@ impl Aidline {
             emergency_advance: 0,
             verifiers,
             threshold,
+            deadline_extended: false,
         };
         storage::save_campaign(&env, &campaign);
 
@@ -658,6 +662,51 @@ impl Aidline {
         MetadataUpdated {
             campaign_id,
             new_metadata_uri,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Extends an active campaign's deadline by up to 30 days.
+    ///
+    /// Only the campaign's creator may call this. An extension can be
+    /// granted at most once per campaign, and only while the campaign is
+    /// active and before the current deadline has elapsed. Emits
+    /// [`DeadlineExtended`].
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    /// - [`Error::CampaignNotActive`]: campaign is not in `Active` status.
+    /// - [`Error::CampaignExpired`]: current deadline has already elapsed.
+    /// - [`Error::DeadlineAlreadyExtended`]: campaign has already used its
+    ///   one-time extension.
+    /// - [`Error::InvalidDeadlineExtension`]: `new_deadline` is not after the
+    ///   current deadline or extends it by more than 30 days.
+    pub fn extend_deadline(env: Env, campaign_id: u64, new_deadline: u64) -> Result<(), Error> {
+        let mut campaign = storage::campaign(&env, campaign_id)?;
+        campaign.creator.require_auth();
+        Self::ensure_open(&env, &campaign)?;
+
+        if campaign.deadline_extended {
+            return Err(Error::DeadlineAlreadyExtended);
+        }
+
+        if new_deadline <= campaign.deadline
+            || new_deadline > campaign.deadline + MAX_DEADLINE_EXTENSION
+        {
+            return Err(Error::InvalidDeadlineExtension);
+        }
+
+        let old_deadline = campaign.deadline;
+        campaign.deadline = new_deadline;
+        campaign.deadline_extended = true;
+        storage::save_campaign(&env, &campaign);
+
+        DeadlineExtended {
+            campaign_id,
+            old_deadline,
+            new_deadline,
         }
         .publish(&env);
 

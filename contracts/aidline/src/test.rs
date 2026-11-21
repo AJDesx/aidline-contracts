@@ -2136,3 +2136,102 @@ fn metadata_update_fails_for_expired_or_nonexistent_campaign() {
         Err(Ok(Error::CampaignExpired))
     );
 }
+
+// ─── Deadline extension tests ────────────────────────────────────────────────
+
+#[test]
+fn creator_can_extend_deadline_once() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    let initial = s.client.get_campaign(&id);
+    let original_deadline = initial.deadline;
+    assert!(!initial.deadline_extended);
+
+    let new_deadline = original_deadline + 15 * DAY;
+    s.client.extend_deadline(&id, &new_deadline);
+
+    let updated = s.client.get_campaign(&id);
+    assert_eq!(updated.deadline, new_deadline);
+    assert!(updated.deadline_extended);
+}
+
+#[test]
+fn second_deadline_extension_is_rejected() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let original_deadline = s.client.get_campaign(&id).deadline;
+
+    // First extension succeeds
+    s.client
+        .extend_deadline(&id, &(original_deadline + 10 * DAY));
+
+    // Second extension fails
+    let res = s
+        .client
+        .try_extend_deadline(&id, &(original_deadline + 20 * DAY));
+    assert_eq!(res, Err(Ok(Error::DeadlineAlreadyExtended)));
+}
+
+#[test]
+fn deadline_extension_rules_enforced() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let original_deadline = s.client.get_campaign(&id).deadline;
+
+    // Extension > 30 days rejected
+    let res_too_long = s
+        .client
+        .try_extend_deadline(&id, &(original_deadline + 31 * DAY));
+    assert_eq!(res_too_long, Err(Ok(Error::InvalidDeadlineExtension)));
+
+    // Extension <= current deadline rejected
+    let res_past = s.client.try_extend_deadline(&id, &original_deadline);
+    assert_eq!(res_past, Err(Ok(Error::InvalidDeadlineExtension)));
+
+    let res_earlier = s
+        .client
+        .try_extend_deadline(&id, &(original_deadline - DAY));
+    assert_eq!(res_earlier, Err(Ok(Error::InvalidDeadlineExtension)));
+}
+
+#[test]
+fn deadline_extension_fails_after_deadline_expired() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let original_deadline = s.client.get_campaign(&id).deadline;
+
+    s.pass_deadline();
+
+    let res = s
+        .client
+        .try_extend_deadline(&id, &(original_deadline + 10 * DAY));
+    assert_eq!(res, Err(Ok(Error::CampaignExpired)));
+}
+
+#[test]
+fn deadline_extension_fails_on_cancelled_campaign() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let original_deadline = s.client.get_campaign(&id).deadline;
+
+    s.client.cancel_campaign(&s.creator, &id);
+
+    let res = s
+        .client
+        .try_extend_deadline(&id, &(original_deadline + 10 * DAY));
+    assert_eq!(res, Err(Ok(Error::CampaignNotActive)));
+}
+
+#[test]
+fn deadline_extension_requires_creator_auth() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let original_deadline = s.client.get_campaign(&id).deadline;
+
+    let res = s
+        .client
+        .mock_auths(&[])
+        .try_extend_deadline(&id, &(original_deadline + 10 * DAY));
+    assert!(res.is_err());
+}

@@ -147,6 +147,7 @@ Sponsors are also included in the refund pool (their `Contribution` entry tracks
 | `unpaused` | `admin` | none |
 | `upgraded` | none | `new_wasm_hash` |
 | `meta_upd` | `campaign_id` | `new_metadata_uri` |
+| `dl_ext` | `campaign_id` | `old_deadline`, `new_deadline` |
 
 The backend indexer reads these to build campaign pages, donor histories and impact reports without scanning contract storage.
 
@@ -161,6 +162,8 @@ The backend indexer reads these to build campaign pages, donor histories and imp
 **One token per deployment.** Multi asset support is a planned improvement.
 
 **Removing a verifier freezes their campaigns.** Funds are not lost: the creator or admin can cancel, which opens refunds. The admin can also reassign the verifier on an active campaign using `reassign_verifier`.
+
+**Creators can extend deadlines once.** To accommodate unexpected field work delays without prematurely triggering refund windows, campaign creators can extend their deadline once by at most 30 days while the campaign is active.
 
 ---
 
