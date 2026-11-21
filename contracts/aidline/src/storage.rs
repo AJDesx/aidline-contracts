@@ -215,3 +215,30 @@ pub fn set_milestone_due_dates(env: &Env, campaign_id: u64, due_dates: &soroban_
     env.storage().persistent().set(&key, due_dates);
     bump(env, &key);
 }
+
+// ─── Issue #9: Milestone approvals storage ───────────────────────────────────
+
+pub fn milestone_approvals(
+    env: &Env,
+    campaign_id: u64,
+    milestone_index: u32,
+) -> soroban_sdk::Vec<Address> {
+    let key = DataKey::MilestoneApprovals(campaign_id, milestone_index);
+    if let Some(approvals) = env.storage().persistent().get(&key) {
+        bump(env, &key);
+        approvals
+    } else {
+        soroban_sdk::Vec::new(env)
+    }
+}
+
+pub fn save_milestone_approvals(
+    env: &Env,
+    campaign_id: u64,
+    milestone_index: u32,
+    approvals: &soroban_sdk::Vec<Address>,
+) {
+    let key = DataKey::MilestoneApprovals(campaign_id, milestone_index);
+    env.storage().persistent().set(&key, approvals);
+    bump(env, &key);
+}

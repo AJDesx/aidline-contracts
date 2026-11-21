@@ -47,6 +47,11 @@ pub struct Campaign {
     /// milestone 0.  Zero for non-Emergency campaigns and for Emergency
     /// campaigns that have not yet used the fast track.
     pub emergency_advance: i128,
+    // Issue #9: multisig verification
+    /// Authorized verifiers who can approve milestones for this campaign.
+    pub verifiers: Vec<Address>,
+    /// Minimum number of independent verifier approvals needed to release a milestone.
+    pub threshold: u32,
 }
 
 /// A sponsor matching pool for a specific campaign.
@@ -142,4 +147,6 @@ pub enum DataKey {
     Pledge(u64),
     // Issue #26: per-milestone due dates
     MilestoneDueDates(u64),
+    // Issue #9: milestone approvals: (campaign_id, milestone_index) -> Vec<Address>
+    MilestoneApprovals(u64, u32),
 }

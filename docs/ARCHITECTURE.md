@@ -70,6 +70,7 @@ This provides critical funds in the first hours of a disaster without waiting fo
 | `BondWithdrawDelay` | instance | `u64` withdrawal delay in seconds (Issue #29) |
 | `PledgeCount` | instance | `u64` next pledge id (Issue #30) |
 | `Pledge(u64)` | persistent | `Pledge` struct (Issue #30) |
+| `MilestoneApprovals(u64, u32)` | persistent | `Vec<Address>` approved verifiers for milestone |
 
 TTLs are extended on every read and write (instance: 30 days, persistent: 120 days). Long running climate campaigns may need an off chain keeper to extend TTLs; this is tracked as an open issue.
 
@@ -109,6 +110,7 @@ Sponsors are also included in the refund pool (their `Contribution` entry tracks
 | `pledge_skipped` | `pledge_id`, `campaign_id` | `donor`, `reason` |
 | `pledge_settlement` | `campaign_id` | `milestone_index`, `total_pledged_pulled` |
 | `verifier_reassigned` | `campaign_id` | `old_verifier`, `new_verifier` |
+| `approved` | `campaign_id`, `milestone_index` | `verifier`, `approvals_count`, `threshold` |
 
 The backend indexer reads these to build campaign pages, donor histories and impact reports without scanning contract storage.
 
@@ -123,6 +125,26 @@ The backend indexer reads these to build campaign pages, donor histories and imp
 **One token per deployment.** Multi asset support is a planned improvement.
 
 **Removing a verifier freezes their campaigns.** Funds are not lost: the creator or admin can cancel, which opens refunds. The admin can also reassign the verifier on an active campaign using `reassign_verifier`.
+
+---
+
+## Multisig Verification: M-of-N Verifiers per Milestone
+
+### Why multisig verification exists
+
+A single verifier represents a single point of failure or compromise. For high-value campaigns, creators can configure multiple independent verifiers and an approval threshold (e.g. 2 of 3, or 3 of 5).
+
+### How it works
+
+1. **Creation**: Creators specify `verifiers: Vec<Address>` and `threshold: u32` via `create_multisig_campaign`. The threshold must satisfy `1 <= threshold <= verifiers.len()`, with no duplicate verifiers, and every verifier must be currently registered in the contract's verifier registry.
+2. **Approval**: Verifiers submit approvals via `approve_milestone_multisig(campaign_id, verifier, proof_uri)`.
+3. **Threshold Enforcement**:
+   - Each approval emits an `approved` event with the verifier, current approval count, and threshold.
+   - Duplicate approvals from the same verifier for the same milestone are rejected with `DuplicateApproval`.
+   - Milestone funds are only released to the beneficiary once the approval count reaches `threshold`.
+4. **Single-verifier compatibility**:
+   - Single-verifier campaigns created via `create_campaign` default to `threshold = 1` and `verifiers = [verifier]`.
+   - The original `approve_milestone(campaign_id, proof_uri)` entry point remains supported for single-verifier campaigns, preserving existing integrations.
 
 ---
 
@@ -305,7 +327,6 @@ If a donor's token allowance is 0 or insufficient for their share:
 ## Known limitations and roadmap
 
 - Verifier reassignment for a live campaign
-- Multisig verification (m of n verifiers per milestone)
 - Overfunding and stretch goals
 - Multi token campaigns
 - TTL keeper for very long climate campaigns
