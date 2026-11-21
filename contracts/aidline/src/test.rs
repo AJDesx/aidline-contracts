@@ -1561,3 +1561,77 @@ fn campaigns_with_different_tokens_operate_side_by_side() {
     assert_eq!(usdc.balance(&donor2), 600);
     assert_eq!(usdc.balance(&s.client.address), 0);
 }
+
+// =============================================================================
+// Read-only view function tests
+// =============================================================================
+
+#[test]
+fn test_view_campaign_count() {
+    let s = Setup::new();
+    assert_eq!(s.client.campaign_count(), 0);
+
+    let c1 = s.campaign();
+    assert_eq!(c1, 0);
+    assert_eq!(s.client.campaign_count(), 1);
+
+    let c2 = s.campaign();
+    assert_eq!(c2, 1);
+    assert_eq!(s.client.campaign_count(), 2);
+}
+
+#[test]
+fn test_view_contribution_of() {
+    let s = Setup::new();
+    let cid = s.campaign();
+    let donor = s.donor(1000);
+
+    // Initial contribution is 0
+    assert_eq!(s.client.contribution_of(&cid, &donor), 0);
+
+    // First donation
+    s.client.donate(&donor, &cid, &300);
+    assert_eq!(s.client.contribution_of(&cid, &donor), 300);
+
+    // Cumulative donation
+    s.client.donate(&donor, &cid, &200);
+    assert_eq!(s.client.contribution_of(&cid, &donor), 500);
+
+    // Cancel campaign and refund donor -> contribution resets to 0
+    s.client.cancel_campaign(&s.creator, &cid);
+    s.client.refund(&donor, &cid);
+    assert_eq!(s.client.contribution_of(&cid, &donor), 0);
+}
+
+#[test]
+fn test_view_is_verifier() {
+    let s = Setup::new();
+    let candidate = Address::generate(&s.env);
+
+    // Initially not a verifier
+    assert!(!s.client.is_verifier(&candidate));
+
+    // Admin adds verifier
+    s.client.add_verifier(&candidate);
+    assert!(s.client.is_verifier(&candidate));
+
+    // Admin removes verifier
+    s.client.remove_verifier(&candidate);
+    assert!(!s.client.is_verifier(&candidate));
+}
+
+#[test]
+fn test_view_admin() {
+    let s = Setup::new();
+    assert_eq!(s.client.admin(), s.admin);
+
+    let new_admin = Address::generate(&s.env);
+    s.client.set_admin(&new_admin);
+    assert_eq!(s.client.admin(), new_admin);
+}
+
+#[test]
+fn test_view_token() {
+    let s = Setup::new();
+    assert_eq!(s.client.token(), s.token.address);
+}
