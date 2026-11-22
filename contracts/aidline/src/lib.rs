@@ -31,7 +31,8 @@ use events::{
     MetadataUpdated, MilestoneApproved, MilestoneRejected, MilestoneReleased, PlatformFeeUpdated,
     PledgeCancelled, PledgeCreated, PledgePulled, PledgeSettlement, PledgeSkipped, Refunded,
     SponsorPoolDeposited, SponsorPoolReturned, TokenAllowlistUpdated, TreasuryUpdated,
-    VerifierBondPosted, VerifierDeregistered, VerifierReassigned, VerifierUpdated,
+    VerifierBondPosted, VerifierDeregistered, VerifierProfileUpdated, VerifierReassigned,
+    VerifierUpdated,
 };
 
 const MAX_MILESTONES: u32 = 20;
@@ -114,6 +115,41 @@ impl Aidline {
             active: false,
         }
         .publish(&env);
+    }
+
+    /// Sets an off-chain profile URI for a registered `verifier`.
+    ///
+    /// Only the admin may call this, and only for verifiers currently registered.
+    /// `profile_uri` must not exceed [`MAX_URI_LENGTH`] bytes. Emits [`VerifierProfileUpdated`].
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the admin.
+    /// - [`Error::UriTooLong`]: `profile_uri` exceeds [`MAX_URI_LENGTH`] bytes.
+    /// - [`Error::NotVerifier`]: `verifier` is not currently registered.
+    pub fn set_verifier_profile(
+        env: Env,
+        verifier: Address,
+        profile_uri: String,
+    ) -> Result<(), Error> {
+        storage::admin(&env).require_auth();
+
+        if profile_uri.len() > MAX_URI_LENGTH {
+            return Err(Error::UriTooLong);
+        }
+
+        if !storage::is_verifier(&env, &verifier) {
+            return Err(Error::NotVerifier);
+        }
+
+        storage::set_verifier_profile(&env, &verifier, &profile_uri);
+
+        VerifierProfileUpdated {
+            verifier,
+            profile_uri,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     /// Transfers admin control to `new_admin`.
@@ -1936,6 +1972,11 @@ impl Aidline {
     /// Returns `true` if `who` is currently a registered verifier.
     pub fn is_verifier(env: Env, who: Address) -> bool {
         storage::is_verifier(&env, &who)
+    }
+
+    /// Returns the off-chain profile URI for `verifier`, or `None` if unset.
+    pub fn verifier_profile(env: Env, verifier: Address) -> Option<String> {
+        storage::verifier_profile(&env, &verifier)
     }
 
     /// Returns the current admin address.

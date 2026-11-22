@@ -172,4 +172,6 @@ pub enum DataKey {
     Treasury,
     // Two-step admin transfer
     PendingAdmin,
+    // Verifier profile URI
+    VerifierProfile(Address),
 }

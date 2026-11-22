@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, String};
 
 use crate::errors::Error;
 use crate::types::{Campaign, DataKey, Pledge, SponsorPool, VerifierBond};
@@ -84,6 +84,19 @@ pub fn set_verifier(env: &Env, who: &Address, active: bool) {
     } else {
         env.storage().persistent().remove(&key);
     }
+}
+
+pub fn verifier_profile(env: &Env, who: &Address) -> Option<String> {
+    let key = DataKey::VerifierProfile(who.clone());
+    let profile = env.storage().persistent().get(&key)?;
+    bump(env, &key);
+    Some(profile)
+}
+
+pub fn set_verifier_profile(env: &Env, who: &Address, uri: &String) {
+    let key = DataKey::VerifierProfile(who.clone());
+    env.storage().persistent().set(&key, uri);
+    bump(env, &key);
 }
 
 pub fn campaign(env: &Env, id: u64) -> Result<Campaign, Error> {

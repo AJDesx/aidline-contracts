@@ -123,6 +123,20 @@ impl VerifierUpdated {
     }
 }
 
+pub struct VerifierProfileUpdated {
+    pub verifier: Address,
+    pub profile_uri: String,
+}
+
+impl VerifierProfileUpdated {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("vf_prof"), self.verifier.clone()),
+            self.profile_uri.clone(),
+        );
+    }
+}
+
 // ─── Admin change events ─────────────────────────────────────────────────────
 
 /// Emitted when the admin transfers control to a new address.

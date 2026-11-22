@@ -3799,3 +3799,70 @@ fn cancel_campaign_with_reason_validates_uri_length_and_existence() {
         Err(Ok(Error::CampaignNotFound))
     );
 }
+
+#[test]
+fn verifier_profile_uri_recorded_and_queried() {
+    let s = Setup::new();
+    let profile = String::from_str(&s.env, "https://redcross.org/verifier-profile");
+
+    // Initially, profile is None
+    assert_eq!(s.client.verifier_profile(&s.verifier), None);
+
+    // Admin sets profile URI for registered verifier
+    s.client.set_verifier_profile(&s.verifier, &profile);
+    assert_eq!(
+        s.client.verifier_profile(&s.verifier),
+        Some(profile.clone())
+    );
+
+    // Admin can update profile URI
+    let updated_profile = String::from_str(&s.env, "https://redcross.org/updated-profile");
+    s.client.set_verifier_profile(&s.verifier, &updated_profile);
+    assert_eq!(
+        s.client.verifier_profile(&s.verifier),
+        Some(updated_profile)
+    );
+
+    // Unset profile returns None for an unregistered address
+    let stranger = Address::generate(&s.env);
+    assert_eq!(s.client.verifier_profile(&stranger), None);
+}
+
+#[test]
+fn verifier_profile_only_admin_and_only_registered_verifiers() {
+    let s = Setup::new();
+    let profile = String::from_str(&s.env, "https://example.org/profile");
+    let stranger = Address::generate(&s.env);
+
+    // Fails for unregistered verifier address
+    assert_eq!(
+        s.client.try_set_verifier_profile(&stranger, &profile),
+        Err(Ok(Error::NotVerifier))
+    );
+
+    // Non-admin cannot set profile
+    let auth = MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "set_verifier_profile",
+            args: (s.verifier.clone(), profile.clone()).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+    let res = s
+        .client
+        .mock_auths(&[auth])
+        .try_set_verifier_profile(&s.verifier, &profile);
+    assert_eq!(res.unwrap_err(), Err(InvokeError::Abort));
+
+    // Reject URI exceeding MAX_URI_LENGTH (256)
+    let long_uri = String::from_str(
+        &s.env,
+        "https://example.com/very-long-verifier-profile-uri-exceeding-two-hundred-and-fifty-six-bytes-limit-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding",
+    );
+    assert_eq!(
+        s.client.try_set_verifier_profile(&s.verifier, &long_uri),
+        Err(Ok(Error::UriTooLong))
+    );
+}
