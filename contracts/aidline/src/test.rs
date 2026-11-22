@@ -1677,6 +1677,119 @@ fn a_pledge_moves_no_money_until_a_milestone_is_approved() {
 }
 
 #[test]
+fn donor_can_cancel_pledge() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1_000);
+    let expiry = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&donor, &s.client.address, &300, &expiry);
+
+    let pledge_id = s.client.create_pledge(&donor, &id, &300);
+    assert!(s.client.get_pledge(&pledge_id).unwrap().active);
+
+    s.client.cancel_pledge(&donor, &pledge_id);
+    assert!(!s.env.events().all().events().is_empty());
+
+    let pledge = s.client.get_pledge(&pledge_id).unwrap();
+    assert!(!pledge.active);
+}
+
+#[test]
+fn cancelled_pledge_is_never_pulled() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1_000);
+    let other_donor = s.donor(1_000);
+    let expiry = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&donor, &s.client.address, &300, &expiry);
+
+    let pledge_id = s.client.create_pledge(&donor, &id, &300);
+    s.client.cancel_pledge(&donor, &pledge_id);
+
+    // Direct donation covers milestone 0 (300)
+    s.client.donate(&other_donor, &id, &300);
+
+    // Milestone approval pulls from active pledges and escrow
+    s.client.approve_milestone(&id, &s.proof());
+
+    // Donor balance was NOT pulled
+    assert_eq!(s.token.balance(&donor), 1_000);
+    let pledge = s.client.get_pledge(&pledge_id).unwrap();
+    assert_eq!(pledge.pulled_amount, 0);
+    assert!(!pledge.active);
+}
+
+#[test]
+fn cancelling_pledge_twice_fails() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1_000);
+    let expiry = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&donor, &s.client.address, &300, &expiry);
+
+    let pledge_id = s.client.create_pledge(&donor, &id, &300);
+    s.client.cancel_pledge(&donor, &pledge_id);
+
+    let res = s.client.try_cancel_pledge(&donor, &pledge_id);
+    assert_eq!(res, Err(Ok(Error::PledgeAlreadyCancelled)));
+}
+
+#[test]
+fn only_pledge_donor_can_cancel() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1_000);
+    let stranger = Address::generate(&s.env);
+    let expiry = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&donor, &s.client.address, &300, &expiry);
+
+    let pledge_id = s.client.create_pledge(&donor, &id, &300);
+
+    // Stranger calls with stranger's auth
+    let auth = MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "cancel_pledge",
+            args: (stranger.clone(), pledge_id).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+    let res = s
+        .client
+        .mock_auths(&[auth])
+        .try_cancel_pledge(&stranger, &pledge_id);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+
+    // Stranger pretending to pass donor address without donor's auth
+    let auth_fake = MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "cancel_pledge",
+            args: (donor.clone(), pledge_id).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+    let res_fake = s
+        .client
+        .mock_auths(&[auth_fake])
+        .try_cancel_pledge(&donor, &pledge_id);
+    assert_eq!(res_fake.unwrap_err(), Err(InvokeError::Abort));
+
+    // Pledge remains active
+    assert!(s.client.get_pledge(&pledge_id).unwrap().active);
+}
+
+#[test]
+fn cancel_nonexistent_pledge_fails() {
+    let s = Setup::new();
+    let donor = Address::generate(&s.env);
+    let res = s.client.try_cancel_pledge(&donor, &999_999);
+    assert_eq!(res, Err(Ok(Error::InvalidPledge)));
+}
+
+#[test]
 fn extend_campaign_ttl_allows_entry_to_survive_past_original_ttl() {
     let s = Setup::new();
     let id = s.campaign();

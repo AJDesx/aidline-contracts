@@ -68,4 +68,7 @@ pub enum Error {
 
     // Two-step admin transfer
     NoPendingAdmin = 38,
+
+    // Pledges
+    PledgeAlreadyCancelled = 39,
 }

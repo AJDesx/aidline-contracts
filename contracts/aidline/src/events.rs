@@ -325,6 +325,25 @@ impl PledgeCreated {
     }
 }
 
+pub struct PledgeCancelled {
+    pub pledge_id: u64,
+    pub campaign_id: u64,
+    pub donor: Address,
+}
+
+impl PledgeCancelled {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (
+                symbol_short!("pl_canc"),
+                self.campaign_id,
+                self.donor.clone(),
+            ),
+            self.pledge_id,
+        );
+    }
+}
+
 pub struct PledgePulled {
     pub pledge_id: u64,
     pub campaign_id: u64,

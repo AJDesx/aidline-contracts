@@ -28,10 +28,10 @@ use events::{
     AdminAccepted, AdminChanged, AdminProposed, BondSlashed, BondWithdrawn, CampaignCancelled,
     CampaignCreated, ContractPaused, ContractUnpaused, ContractUpgraded, DeadlineExtended, Donated,
     EmergencyAdvanceReleased, MatchingApplied, MetadataUpdated, MilestoneApproved,
-    MilestoneRejected, MilestoneReleased, PlatformFeeUpdated, PledgeCreated, PledgePulled,
-    PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited, SponsorPoolReturned,
-    TokenAllowlistUpdated, TreasuryUpdated, VerifierBondPosted, VerifierDeregistered,
-    VerifierReassigned, VerifierUpdated,
+    MilestoneRejected, MilestoneReleased, PlatformFeeUpdated, PledgeCancelled, PledgeCreated,
+    PledgePulled, PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited,
+    SponsorPoolReturned, TokenAllowlistUpdated, TreasuryUpdated, VerifierBondPosted,
+    VerifierDeregistered, VerifierReassigned, VerifierUpdated,
 };
 
 const MAX_MILESTONES: u32 = 20;
@@ -1221,6 +1221,39 @@ impl Aidline {
         .publish(&env);
 
         Ok(pledge_id)
+    }
+
+    /// Cancels an active pledge, marking it inactive.
+    ///
+    /// Only the donor who made the pledge can cancel it. Milestone pulls and
+    /// settlements will skip cancelled pledges without error. Emits [`PledgeCancelled`].
+    ///
+    /// # Errors
+    /// - [`Error::InvalidPledge`]: no pledge with `pledge_id` exists.
+    /// - [`Error::Unauthorized`]: caller is not the donor of the pledge.
+    /// - [`Error::PledgeAlreadyCancelled`]: the pledge has already been cancelled or is inactive.
+    pub fn cancel_pledge(env: Env, donor: Address, pledge_id: u64) -> Result<(), Error> {
+        donor.require_auth();
+
+        let mut pledge = storage::pledge(&env, pledge_id).ok_or(Error::InvalidPledge)?;
+        if pledge.donor != donor {
+            return Err(Error::Unauthorized);
+        }
+        if !pledge.active {
+            return Err(Error::PledgeAlreadyCancelled);
+        }
+
+        pledge.active = false;
+        storage::save_pledge(&env, &pledge);
+
+        PledgeCancelled {
+            pledge_id,
+            campaign_id: pledge.campaign_id,
+            donor,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     /// Releases an emergency fast-track advance for an `Emergency` campaign.
