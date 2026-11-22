@@ -110,6 +110,39 @@ fn rejects_unknown_verifier() {
 }
 
 #[test]
+fn rejects_conflict_of_interest() {
+    let s = Setup::new();
+    let future = s.env.ledger().timestamp() + DAY;
+    let uri = String::from_str(&s.env, "ipfs://trees");
+
+    // Verifier is also creator
+    let res_creator = s.client.try_create_campaign(
+        &s.verifier,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Climate,
+        &uri,
+        &future,
+        &vec![&s.env, 100],
+    );
+    assert_eq!(res_creator, Err(Ok(Error::ConflictOfInterest)));
+
+    // Verifier is also beneficiary
+    let res_beneficiary = s.client.try_create_campaign(
+        &s.creator,
+        &s.verifier,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Climate,
+        &uri,
+        &future,
+        &vec![&s.env, 100],
+    );
+    assert_eq!(res_beneficiary, Err(Ok(Error::ConflictOfInterest)));
+}
+
+#[test]
 fn rejects_bad_milestones_and_deadline() {
     let s = Setup::new();
     let uri = String::from_str(&s.env, "ipfs://x");

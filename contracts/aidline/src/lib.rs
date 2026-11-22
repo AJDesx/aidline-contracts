@@ -471,6 +471,8 @@ impl Aidline {
     ///
     /// # Errors
     /// - [`Error::UriTooLong`]: `metadata_uri` exceeds [`MAX_URI_LENGTH`] bytes.
+    /// - [`Error::ConflictOfInterest`]: `verifier` is equal to `creator` or
+    ///   `beneficiary`.
     /// - [`Error::NotVerifier`]: `verifier` is not currently registered.
     /// - [`Error::TokenNotAllowed`]: `token` is not on the admin allowlist.
     /// - [`Error::DeadlineInPast`]: `deadline` is not after the current
@@ -535,6 +537,9 @@ impl Aidline {
 
         if metadata_uri.len() > MAX_URI_LENGTH {
             return Err(Error::UriTooLong);
+        }
+        if verifiers.contains(&creator) || verifiers.contains(&beneficiary) {
+            return Err(Error::ConflictOfInterest);
         }
 
         if storage::is_paused(&env) {

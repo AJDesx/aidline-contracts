@@ -59,4 +59,7 @@ pub enum Error {
 
     // URI length limit
     UriTooLong = 35,
+
+    // Conflict of interest
+    ConflictOfInterest = 36,
 }
