@@ -1664,12 +1664,30 @@ impl Aidline {
         let Ok(campaign) = storage::campaign(&env, campaign_id) else {
             return false;
         };
-        let expired = campaign.status == CampaignStatus::Active
-            && env.ledger().timestamp() > campaign.deadline;
-        let is_overdue = Self::is_overdue(&env, &campaign);
-        let ended = campaign.status == CampaignStatus::Cancelled || expired;
+        Self::is_campaign_refundable(&env, &campaign)
+    }
 
-        ended || is_overdue
+    /// Returns the amount `donor` would receive if they claimed a refund right now.
+    ///
+    /// Uses the same rounding rules as [`refund`] (rounds down in favor of the contract).
+    /// Returns 0 if a refund is not available, if the campaign does not exist, or if
+    /// `donor` has no contribution or no unreleased balance remains.
+    pub fn refundable_amount(env: Env, campaign_id: u64, donor: Address) -> i128 {
+        let Ok(campaign) = storage::campaign(&env, campaign_id) else {
+            return 0;
+        };
+        if !Self::is_campaign_refundable(&env, &campaign) {
+            return 0;
+        }
+        let contributed = storage::contribution(&env, campaign_id, &donor);
+        if contributed == 0 || campaign.raised == 0 {
+            return 0;
+        }
+        let unreleased = campaign.raised - campaign.released;
+        if unreleased <= 0 {
+            return 0;
+        }
+        contributed * unreleased / campaign.raised
     }
 
     /// Returns `true` if `who` is currently a registered verifier.
@@ -1872,5 +1890,14 @@ impl Aidline {
             return true;
         }
         false
+    }
+
+    fn is_campaign_refundable(env: &Env, campaign: &Campaign) -> bool {
+        let expired = campaign.status == CampaignStatus::Active
+            && env.ledger().timestamp() > campaign.deadline;
+        let is_overdue = Self::is_overdue(env, campaign);
+        let ended = campaign.status == CampaignStatus::Cancelled || expired;
+
+        ended || is_overdue
     }
 }

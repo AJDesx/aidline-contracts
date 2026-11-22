@@ -1852,6 +1852,100 @@ fn test_view_contribution_of() {
 }
 
 #[test]
+fn test_view_refundable_amount() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor1 = s.donor(1000);
+    let donor2 = s.donor(1000);
+    let stranger = Address::generate(&s.env);
+
+    // 1. Non-existent campaign returns 0
+    assert_eq!(s.client.refundable_amount(&999_999, &donor1), 0);
+
+    // 2. Active campaign within deadline is not refundable -> returns 0
+    s.client.donate(&donor1, &id, &500);
+    s.client.donate(&donor2, &id, &500);
+    assert_eq!(s.client.refundable_amount(&id, &donor1), 0);
+    assert_eq!(s.client.refundable_amount(&id, &stranger), 0);
+
+    // 3. Cancelled campaign matches refund amount
+    // Release milestone 0 (300). Raised: 1000, Released: 300, Unreleased: 700.
+    s.client.approve_milestone(&id, &s.proof());
+    let cancel_id = id;
+    s.client.cancel_campaign(&s.creator, &cancel_id);
+
+    // donor1 contributed 500: 500 * 700 / 1000 = 350
+    assert_eq!(s.client.refundable_amount(&cancel_id, &donor1), 350);
+    assert_eq!(s.client.refundable_amount(&cancel_id, &donor2), 350);
+    assert_eq!(s.client.refundable_amount(&cancel_id, &stranger), 0);
+
+    // Calling refund pays exactly what refundable_amount reported
+    let refunded = s.client.refund(&donor1, &cancel_id);
+    assert_eq!(refunded, 350);
+    // After refund, donor1 has no recorded contribution -> refundable_amount is 0
+    assert_eq!(s.client.refundable_amount(&cancel_id, &donor1), 0);
+    // donor2 still has 350 refundable
+    assert_eq!(s.client.refundable_amount(&cancel_id, &donor2), 350);
+
+    // 4. Expired campaign matches refund amount
+    let s_exp = Setup::new();
+    let exp_id = s_exp.campaign();
+    let d = s_exp.donor(600);
+    s_exp.client.donate(&d, &exp_id, &600);
+    assert_eq!(s_exp.client.refundable_amount(&exp_id, &d), 0);
+
+    s_exp.pass_deadline();
+    // 600 * 1000 / 600 = 600 (full refund)
+    assert_eq!(s_exp.client.refundable_amount(&exp_id, &d), 600);
+    assert_eq!(s_exp.client.refund(&d, &exp_id), 600);
+    assert_eq!(s_exp.client.refundable_amount(&exp_id, &d), 0);
+
+    // 5. Overdue milestone in active campaign matches refund amount
+    let s_overdue = Setup::new();
+    let now = s_overdue.env.ledger().timestamp();
+    let due_dates = vec![&s_overdue.env, now + 10 * DAY, now + 20 * DAY];
+    let milestones = vec![&s_overdue.env, 300, 700];
+    let overdue_id = s_overdue.client.create_campaign_with_due_dates(
+        &s_overdue.creator,
+        &s_overdue.beneficiary,
+        &s_overdue.verifier,
+        &s_overdue.token.address,
+        &CampaignKind::Climate,
+        &String::from_str(&s_overdue.env, "ipfs://overdue-view"),
+        &(now + 30 * DAY),
+        &milestones,
+        &due_dates,
+    );
+    let d_overdue = s_overdue.donor(500);
+    s_overdue.client.donate(&d_overdue, &overdue_id, &500);
+    assert_eq!(
+        s_overdue.client.refundable_amount(&overdue_id, &d_overdue),
+        0
+    );
+
+    s_overdue.env.ledger().set_timestamp(now + 11 * DAY);
+    assert_eq!(
+        s_overdue.client.refundable_amount(&overdue_id, &d_overdue),
+        500
+    );
+    assert_eq!(s_overdue.client.refund(&d_overdue, &overdue_id), 500);
+    assert_eq!(
+        s_overdue.client.refundable_amount(&overdue_id, &d_overdue),
+        0
+    );
+
+    // 6. Completed campaign returns 0
+    let s_comp = Setup::new();
+    let comp_id = s_comp.campaign();
+    let d_comp = s_comp.donor(1000);
+    s_comp.client.donate(&d_comp, &comp_id, &1000);
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    assert_eq!(s_comp.client.refundable_amount(&comp_id, &d_comp), 0);
+}
+
+#[test]
 fn test_view_is_verifier() {
     let s = Setup::new();
     let candidate = Address::generate(&s.env);
