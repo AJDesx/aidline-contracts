@@ -45,6 +45,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for storage layout, events, and
 
 - [Threat model](docs/THREAT_MODEL.md): what each role can and cannot do, and which risks are still open
 - [Deployment](docs/DEPLOYMENT.md): build, deploy to testnet, mainnet checklist
+- [CLI guide](docs/CLI.md): copy-and-paste Stellar CLI examples for every contract function
 - [Decision records](docs/adr/README.md): why the contract is built the way it is
 - [Roadmap](ROADMAP.md)
 
