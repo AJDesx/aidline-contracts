@@ -75,6 +75,21 @@ impl CampaignCancelled {
     }
 }
 
+pub struct CampaignCancelledWithReason {
+    pub campaign_id: u64,
+    pub caller: Address,
+    pub reason_uri: String,
+}
+
+impl CampaignCancelledWithReason {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("canceled"), self.campaign_id),
+            (self.caller.clone(), self.reason_uri.clone()),
+        );
+    }
+}
+
 pub struct Refunded {
     pub campaign_id: u64,
     pub donor: Address,

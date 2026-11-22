@@ -3729,3 +3729,73 @@ fn approval_cooldown_and_last_approval_time_return_campaign_not_found() {
         Err(Ok(Error::CampaignNotFound))
     );
 }
+
+#[test]
+fn cancel_campaign_with_reason_by_creator_or_admin_succeeds() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let reason = String::from_str(&s.env, "ipfs://reason-severe-weather");
+
+    // Stranger cannot cancel with reason
+    let stranger = Address::generate(&s.env);
+    assert_eq!(
+        s.client
+            .try_cancel_campaign_with_reason(&stranger, &id, &reason),
+        Err(Ok(Error::Unauthorized))
+    );
+
+    // Creator can cancel with reason
+    s.client
+        .cancel_campaign_with_reason(&s.creator, &id, &reason);
+    assert_eq!(s.client.get_campaign(&id).status, CampaignStatus::Cancelled);
+
+    // Second cancel fails because campaign is already cancelled
+    assert_eq!(
+        s.client
+            .try_cancel_campaign_with_reason(&s.creator, &id, &reason),
+        Err(Ok(Error::CampaignNotActive))
+    );
+
+    // Admin can cancel another campaign with reason
+    let id2 = s.campaign();
+    let admin_reason = String::from_str(&s.env, "ipfs://safety-intervention");
+    s.client
+        .cancel_campaign_with_reason(&s.admin, &id2, &admin_reason);
+    assert_eq!(
+        s.client.get_campaign(&id2).status,
+        CampaignStatus::Cancelled
+    );
+
+    // Existing cancel_campaign without reason still works
+    let id3 = s.campaign();
+    s.client.cancel_campaign(&s.creator, &id3);
+    assert_eq!(
+        s.client.get_campaign(&id3).status,
+        CampaignStatus::Cancelled
+    );
+}
+
+#[test]
+fn cancel_campaign_with_reason_validates_uri_length_and_existence() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    // 257-byte reason URI exceeds MAX_URI_LENGTH (256)
+    let long_reason = String::from_str(
+        &s.env,
+        "https://example.com/long-cancel-reason-uri-exceeding-two-hundred-and-fifty-six-bytes-limit-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding",
+    );
+    assert_eq!(
+        s.client
+            .try_cancel_campaign_with_reason(&s.creator, &id, &long_reason),
+        Err(Ok(Error::UriTooLong))
+    );
+
+    // Non-existent campaign
+    let valid_reason = String::from_str(&s.env, "ipfs://reason");
+    assert_eq!(
+        s.client
+            .try_cancel_campaign_with_reason(&s.creator, &999, &valid_reason),
+        Err(Ok(Error::CampaignNotFound))
+    );
+}

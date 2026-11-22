@@ -26,12 +26,12 @@ pub use types::{
 
 use events::{
     AdminAccepted, AdminChanged, AdminProposed, BondSlashed, BondWithdrawn, CampaignCancelled,
-    CampaignCreated, ContractPaused, ContractUnpaused, ContractUpgraded, DeadlineExtended, Donated,
-    EmergencyAdvanceReleased, MatchingApplied, MetadataUpdated, MilestoneApproved,
-    MilestoneRejected, MilestoneReleased, PlatformFeeUpdated, PledgeCancelled, PledgeCreated,
-    PledgePulled, PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited,
-    SponsorPoolReturned, TokenAllowlistUpdated, TreasuryUpdated, VerifierBondPosted,
-    VerifierDeregistered, VerifierReassigned, VerifierUpdated,
+    CampaignCancelledWithReason, CampaignCreated, ContractPaused, ContractUnpaused,
+    ContractUpgraded, DeadlineExtended, Donated, EmergencyAdvanceReleased, MatchingApplied,
+    MetadataUpdated, MilestoneApproved, MilestoneRejected, MilestoneReleased, PlatformFeeUpdated,
+    PledgeCancelled, PledgeCreated, PledgePulled, PledgeSettlement, PledgeSkipped, Refunded,
+    SponsorPoolDeposited, SponsorPoolReturned, TokenAllowlistUpdated, TreasuryUpdated,
+    VerifierBondPosted, VerifierDeregistered, VerifierReassigned, VerifierUpdated,
 };
 
 const MAX_MILESTONES: u32 = 20;
@@ -1626,6 +1626,46 @@ impl Aidline {
         storage::save_campaign(&env, &campaign);
 
         CampaignCancelled { campaign_id }.publish(&env);
+        Ok(())
+    }
+
+    /// Stops a campaign early with an explanatory reason URI so donors and indexers know why.
+    ///
+    /// Only the campaign's creator or the admin may call this. The campaign must currently
+    /// be `Active`. `reason_uri` must not exceed [`MAX_URI_LENGTH`]. Emits [`CampaignCancelledWithReason`].
+    ///
+    /// # Errors
+    /// - [`Error::UriTooLong`]: `reason_uri` exceeds [`MAX_URI_LENGTH`] bytes.
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    /// - [`Error::Unauthorized`]: caller is neither the creator nor the admin.
+    /// - [`Error::CampaignNotActive`]: campaign is not in `Active` status.
+    pub fn cancel_campaign_with_reason(
+        env: Env,
+        caller: Address,
+        campaign_id: u64,
+        reason_uri: String,
+    ) -> Result<(), Error> {
+        if reason_uri.len() > MAX_URI_LENGTH {
+            return Err(Error::UriTooLong);
+        }
+        caller.require_auth();
+        let mut campaign = storage::campaign(&env, campaign_id)?;
+        if caller != campaign.creator && caller != storage::admin(&env) {
+            return Err(Error::Unauthorized);
+        }
+        if campaign.status != CampaignStatus::Active {
+            return Err(Error::CampaignNotActive);
+        }
+
+        campaign.status = CampaignStatus::Cancelled;
+        storage::save_campaign(&env, &campaign);
+
+        CampaignCancelledWithReason {
+            campaign_id,
+            caller,
+            reason_uri,
+        }
+        .publish(&env);
         Ok(())
     }
 
