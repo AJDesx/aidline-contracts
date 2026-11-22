@@ -134,7 +134,7 @@ Sponsors are also included in the refund pool (their `Contribution` entry tracks
 
 | Event | Topics | Data |
 | --- | --- | --- |
-| `campaign_created` | `campaign_id` | `creator`, `kind`, `goal`, `deadline` |
+| `campaign_created` | `campaign_id` | `creator`, `kind`, `goal`, `deadline`, `min_donation` |
 | `donated` | `campaign_id`, `donor` | `amount` |
 | `emergency_advance_released` | `campaign_id`, `verifier` | `milestone_index`, `amount` |
 | `milestone_released` | `campaign_id` | `index`, `amount`, `fee`, `proof_uri` |
@@ -375,6 +375,17 @@ If a donor's token allowance is 0 or insufficient for their share:
 | Donor retains control until | Milestone approval | Never |
 | Guaranteed funding | No (allowance may lapse) | Yes (tokens already in contract) |
 | Refund needed if campaign fails | No (tokens never left) | Yes |
+
+---
+
+## Optional Minimum Donation
+
+Creators can configure an optional minimum donation floor when creating a campaign via `create_campaign_min_donation`.
+
+- **Purpose**: Prevents tiny donations from bloating the contribution map in persistent storage and making pro-rata refunds cost more in network transaction fees than the refund amount itself.
+- **Enforcement**: `donate` checks the incoming amount against `min_donation`. If `amount < campaign.min_donation` and the donation does not fill the remaining funding goal (`amount < remaining`), the call fails with `Error::DonationBelowMinimum`.
+- **Final donation exception**: If the remaining balance to reach the campaign goal is smaller than `min_donation`, a final donation that reaches or exceeds the remaining goal (`amount >= remaining`) is accepted, ensuring campaigns can always reach 100% funding without getting stuck.
+- **Backwards compatibility**: Campaigns created through standard entry points (`create_campaign`, `create_multisig_campaign`, `create_campaign_with_due_dates`) default to `min_donation = 0`, which imposes no floor and preserves original behavior.
 
 ---
 

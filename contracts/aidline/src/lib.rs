@@ -528,7 +528,7 @@ impl Aidline {
     ) -> Result<u64, Error> {
         let mut verifiers = Vec::new(&env);
         verifiers.push_back(verifier.clone());
-        Self::create_multisig_campaign(
+        Self::create_multisig_campaign_inner(
             env,
             creator,
             beneficiary,
@@ -539,6 +539,45 @@ impl Aidline {
             metadata_uri,
             deadline,
             milestones,
+            0,
+        )
+    }
+
+    /// Creates a new campaign with a minimum donation floor.
+    ///
+    /// Donations below `min_donation` are rejected by [`donate`], except for
+    /// the final donation that reaches or exceeds the remaining goal.
+    /// A `min_donation` of 0 imposes no floor.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidAmount`]: `min_donation` is negative.
+    /// - All other errors from [`create_campaign`].
+    pub fn create_campaign_min_donation(
+        env: Env,
+        creator: Address,
+        beneficiary: Address,
+        verifier: Address,
+        token: Address,
+        kind: CampaignKind,
+        metadata_uri: String,
+        deadline: u64,
+        milestones: Vec<i128>,
+        min_donation: i128,
+    ) -> Result<u64, Error> {
+        let mut verifiers = Vec::new(&env);
+        verifiers.push_back(verifier.clone());
+        Self::create_multisig_campaign_inner(
+            env,
+            creator,
+            beneficiary,
+            verifiers,
+            1,
+            token,
+            kind,
+            metadata_uri,
+            deadline,
+            milestones,
+            min_donation,
         )
     }
 
@@ -567,9 +606,41 @@ impl Aidline {
         deadline: u64,
         milestones: Vec<i128>,
     ) -> Result<u64, Error> {
+        Self::create_multisig_campaign_inner(
+            env,
+            creator,
+            beneficiary,
+            verifiers,
+            threshold,
+            token,
+            kind,
+            metadata_uri,
+            deadline,
+            milestones,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_multisig_campaign_inner(
+        env: Env,
+        creator: Address,
+        beneficiary: Address,
+        verifiers: Vec<Address>,
+        threshold: u32,
+        token: Address,
+        kind: CampaignKind,
+        metadata_uri: String,
+        deadline: u64,
+        milestones: Vec<i128>,
+        min_donation: i128,
+    ) -> Result<u64, Error> {
         creator.require_auth();
         storage::bump_instance(&env);
 
+        if min_donation < 0 {
+            return Err(Error::InvalidAmount);
+        }
         if metadata_uri.len() > MAX_URI_LENGTH {
             return Err(Error::UriTooLong);
         }
@@ -635,6 +706,7 @@ impl Aidline {
             verifiers,
             threshold,
             deadline_extended: false,
+            min_donation,
         };
         storage::save_campaign(&env, &campaign);
 
@@ -644,6 +716,7 @@ impl Aidline {
             kind,
             goal,
             deadline,
+            min_donation,
         }
         .publish(&env);
         Ok(id)
@@ -777,6 +850,8 @@ impl Aidline {
     ///
     /// # Errors
     /// - [`Error::InvalidAmount`]: `amount` is zero or negative.
+    /// - [`Error::DonationBelowMinimum`]: `amount` is below the campaign's
+    ///   `min_donation` and does not reach the remaining goal.
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
     /// - [`Error::CampaignNotActive`]: campaign is not in `Active` status.
     /// - [`Error::CampaignExpired`]: campaign deadline has passed.
@@ -798,6 +873,10 @@ impl Aidline {
         }
 
         let remaining = campaign.goal - campaign.raised;
+        if campaign.min_donation > 0 && amount < campaign.min_donation && amount < remaining {
+            return Err(Error::DonationBelowMinimum);
+        }
+
         let accepted = amount.min(remaining);
 
         token::Client::new(&env, &campaign.token).transfer(

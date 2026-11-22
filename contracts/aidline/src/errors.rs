@@ -62,4 +62,7 @@ pub enum Error {
 
     // Conflict of interest
     ConflictOfInterest = 36,
+
+    // Optional minimum donation
+    DonationBelowMinimum = 37,
 }
