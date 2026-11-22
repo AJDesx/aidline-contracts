@@ -1526,6 +1526,18 @@ impl Aidline {
         storage::campaign(&env, campaign_id)
     }
 
+    /// Returns the remaining amount needed to reach the campaign goal (`goal - raised`).
+    ///
+    /// Returns `0` if the campaign goal has already been reached or exceeded.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn remaining_to_goal(env: Env, campaign_id: u64) -> Result<i128, Error> {
+        let campaign = storage::campaign(&env, campaign_id)?;
+        let remaining = campaign.goal.saturating_sub(campaign.raised);
+        Ok(remaining.max(0))
+    }
+
     /// Extends the persistent storage TTL for `campaign_id`.
     ///
     /// Designed for long-running campaigns (e.g. climate projects) that may experience

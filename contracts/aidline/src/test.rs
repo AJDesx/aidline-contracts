@@ -2609,3 +2609,28 @@ fn refund_math_unaffected_by_platform_fee() {
     // Total refunded = 420 + 280 = 700. Remaining in contract = 0.
     assert_eq!(s.token.balance(&s.client.address), 0);
 }
+
+#[test]
+fn remaining_to_goal_returns_correct_amount_and_zero_when_funded() {
+    let s = Setup::new();
+    let id = s.campaign(); // goal is 1000
+
+    // Initial state: goal - raised = 1000 - 0 = 1000
+    assert_eq!(s.client.remaining_to_goal(&id), 1000);
+
+    // Donate 400: remaining is 600
+    let donor = s.donor(1000);
+    s.client.donate(&donor, &id, &400);
+    assert_eq!(s.client.remaining_to_goal(&id), 600);
+
+    // Donate remaining 600: goal reached, remaining is 0
+    s.client.donate(&donor, &id, &600);
+    assert_eq!(s.client.remaining_to_goal(&id), 0);
+}
+
+#[test]
+fn remaining_to_goal_returns_campaign_not_found_for_unknown_id() {
+    let s = Setup::new();
+    let res = s.client.try_remaining_to_goal(&99_999);
+    assert_eq!(res, Err(Ok(Error::CampaignNotFound)));
+}
