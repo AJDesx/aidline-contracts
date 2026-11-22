@@ -2389,3 +2389,110 @@ fn deadline_extension_requires_creator_auth() {
         .try_extend_deadline(&id, &(original_deadline + 10 * DAY));
     assert!(res.is_err());
 }
+
+#[test]
+fn verifier_can_reject_milestone_with_reason() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+    s.client.donate(&donor, &id, &500);
+
+    let reason = String::from_str(&s.env, "ipfs://rejection-reason");
+    let res = s.client.try_reject_milestone(&id, &reason);
+    assert_eq!(res, Ok(Ok(())));
+
+    // Verify event was emitted
+    assert!(
+        !s.env.events().all().events().is_empty(),
+        "MilestoneRejected event not emitted"
+    );
+
+    // Verify no state change to funds or milestones progress
+    let c = s.client.get_campaign(&id);
+    assert_eq!(c.raised, 500);
+    assert_eq!(c.released, 0);
+    assert_eq!(c.milestones_released, 0);
+    assert_eq!(c.status, CampaignStatus::Active);
+    assert_eq!(s.token.balance(&s.beneficiary), 0);
+}
+
+#[test]
+fn reject_milestone_requires_verifier_auth() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let reason = String::from_str(&s.env, "ipfs://rejection-reason");
+
+    let res = s.client.mock_auths(&[]).try_reject_milestone(&id, &reason);
+    assert!(res.is_err());
+}
+
+#[test]
+fn reject_milestone_rejects_unregistered_verifier() {
+    let s = Setup::new();
+    let id = s.campaign();
+    s.client.remove_verifier(&s.verifier);
+
+    let reason = String::from_str(&s.env, "ipfs://rejection-reason");
+    let res = s.client.try_reject_milestone(&id, &reason);
+    assert_eq!(res, Err(Ok(Error::NotVerifier)));
+}
+
+#[test]
+fn reject_milestone_rejects_long_reason_uri() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    // 257-byte string exceeds MAX_URI_LENGTH (256)
+    let long_uri = String::from_str(
+        &s.env,
+        "https://example.com/very/long/rejection/path/that/exceeds/the/maximum/allowed/length/of/two/hundred/and/fifty/six/bytes/---------------------------------------------------------------------------------------------------------------------------------------------",
+    );
+    let res = s.client.try_reject_milestone(&id, &long_uri);
+    assert_eq!(res, Err(Ok(Error::UriTooLong)));
+}
+
+#[test]
+fn reject_milestone_fails_for_expired_or_cancelled_campaign() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let reason = String::from_str(&s.env, "ipfs://rejection-reason");
+
+    // Cancelled campaign
+    s.client.cancel_campaign(&s.creator, &id);
+    assert_eq!(
+        s.client.try_reject_milestone(&id, &reason),
+        Err(Ok(Error::CampaignNotActive))
+    );
+
+    // Expired campaign
+    let s2 = Setup::new();
+    let id2 = s2.campaign();
+    let reason2 = String::from_str(&s2.env, "ipfs://rejection-reason");
+    s2.pass_deadline();
+    assert_eq!(
+        s2.client.try_reject_milestone(&id2, &reason2),
+        Err(Ok(Error::CampaignExpired))
+    );
+}
+
+#[test]
+fn reject_milestone_fails_when_all_milestones_released() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+    s.client.donate(&donor, &id, &1000);
+
+    // Release all 3 milestones
+    s.client.approve_milestone(&id, &s.proof());
+    s.client.approve_milestone(&id, &s.proof());
+    s.client.approve_milestone(&id, &s.proof());
+
+    let c = s.client.get_campaign(&id);
+    assert_eq!(c.status, CampaignStatus::Completed);
+
+    let reason = String::from_str(&s.env, "ipfs://rejection-reason");
+    assert_eq!(
+        s.client.try_reject_milestone(&id, &reason),
+        Err(Ok(Error::CampaignNotActive))
+    );
+}

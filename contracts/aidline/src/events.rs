@@ -398,6 +398,21 @@ impl MilestoneApproved {
     }
 }
 
+pub struct MilestoneRejected {
+    pub campaign_id: u64,
+    pub index: u32,
+    pub reason_uri: String,
+}
+
+impl MilestoneRejected {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("rejected"), self.campaign_id, self.index),
+            self.reason_uri.clone(),
+        );
+    }
+}
+
 // ─── Issue #10: Token allowlist updated event ───────────────────────────────
 
 /// Emitted when the admin adds or removes a token from the campaign allowlist.

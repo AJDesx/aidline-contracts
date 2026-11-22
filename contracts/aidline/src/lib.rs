@@ -27,8 +27,8 @@ pub use types::{
 use events::{
     AdminChanged, BondSlashed, BondWithdrawn, CampaignCancelled, CampaignCreated, ContractPaused,
     ContractUnpaused, ContractUpgraded, DeadlineExtended, Donated, EmergencyAdvanceReleased,
-    MatchingApplied, MetadataUpdated, MilestoneApproved, MilestoneReleased, PledgeCreated,
-    PledgePulled, PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited,
+    MatchingApplied, MetadataUpdated, MilestoneApproved, MilestoneRejected, MilestoneReleased,
+    PledgeCreated, PledgePulled, PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited,
     SponsorPoolReturned, TokenAllowlistUpdated, VerifierBondPosted, VerifierDeregistered,
     VerifierReassigned, VerifierUpdated,
 };
@@ -1180,6 +1180,46 @@ impl Aidline {
             return Err(Error::Unauthorized);
         }
         Self::internal_approve_milestone(&env, campaign_id, campaign.verifier.clone(), proof_uri)
+    }
+
+    /// Records a verifier's rejection of the next pending milestone with an explanatory reason URI.
+    ///
+    /// Only the campaign's registered verifier may call this. Does not move funds or advance
+    /// milestone progress. Emits [`MilestoneRejected`].
+    ///
+    /// # Errors
+    /// - [`Error::UriTooLong`]: `reason_uri` exceeds [`MAX_URI_LENGTH`] bytes.
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    /// - [`Error::NotVerifier`]: the campaign verifier is no longer registered.
+    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`]: campaign is not open.
+    /// - [`Error::NoMilestonesLeft`]: all milestones have already been released.
+    pub fn reject_milestone(env: Env, campaign_id: u64, reason_uri: String) -> Result<(), Error> {
+        if reason_uri.len() > MAX_URI_LENGTH {
+            return Err(Error::UriTooLong);
+        }
+
+        let campaign = storage::campaign(&env, campaign_id)?;
+        campaign.verifier.require_auth();
+
+        if !storage::is_verifier(&env, &campaign.verifier) {
+            return Err(Error::NotVerifier);
+        }
+
+        Self::ensure_open(&env, &campaign)?;
+
+        let index = campaign.milestones_released;
+        if index >= campaign.milestones.len() {
+            return Err(Error::NoMilestonesLeft);
+        }
+
+        MilestoneRejected {
+            campaign_id,
+            index,
+            reason_uri,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     fn internal_approve_milestone(
