@@ -47,6 +47,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for storage layout, events, and
 - [Deployment](docs/DEPLOYMENT.md): build, deploy to testnet, mainnet checklist
 - [CLI guide](docs/CLI.md): copy-and-paste Stellar CLI examples for every contract function
 - [Error code reference](docs/ERRORS.md): complete numeric error codes, returning functions, and caller remedies
+- [Glossary](docs/GLOSSARY.md): definitions of contract domain terms (escrow, milestones, verifier bonds, pledges, etc.)
 - [Decision records](docs/adr/README.md): why the contract is built the way it is
 - [Roadmap](ROADMAP.md)
 
