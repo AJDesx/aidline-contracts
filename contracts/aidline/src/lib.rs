@@ -1665,6 +1665,17 @@ impl Aidline {
         }
     }
 
+    /// Returns the milestone due dates for `campaign_id`.
+    ///
+    /// Returns an empty vector for campaigns created without per-milestone due dates.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn milestone_due_dates(env: Env, campaign_id: u64) -> Result<Vec<u64>, Error> {
+        storage::campaign(&env, campaign_id)?;
+        Ok(storage::milestone_due_dates(&env, campaign_id).unwrap_or_else(|| Vec::new(&env)))
+    }
+
     /// Returns the total amount `donor` has contributed to `campaign_id`.
     pub fn contribution_of(env: Env, campaign_id: u64, donor: Address) -> i128 {
         storage::contribution(&env, campaign_id, &donor)

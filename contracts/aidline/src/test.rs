@@ -2002,6 +2002,41 @@ fn test_view_effective_status() {
 }
 
 #[test]
+fn test_view_milestone_due_dates() {
+    let s = Setup::new();
+
+    // 1. Unknown campaign returns CampaignNotFound
+    assert_eq!(
+        s.client.try_milestone_due_dates(&999_999),
+        Err(Ok(Error::CampaignNotFound))
+    );
+
+    // 2. Campaign created with create_campaign returns empty vector
+    let id_standard = s.campaign();
+    let due_dates_empty = s.client.milestone_due_dates(&id_standard);
+    assert_eq!(due_dates_empty.len(), 0);
+
+    // 3. Campaign created with create_campaign_with_due_dates returns stored due dates
+    let now = s.env.ledger().timestamp();
+    let expected_dates = vec![&s.env, now + 5 * DAY, now + 15 * DAY, now + 25 * DAY];
+    let milestones = vec![&s.env, 300, 300, 400];
+    let id_with_dates = s.client.create_campaign_with_due_dates(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Emergency,
+        &String::from_str(&s.env, "ipfs://due-dates-view"),
+        &(now + 30 * DAY),
+        &milestones,
+        &expected_dates,
+    );
+
+    let retrieved_dates = s.client.milestone_due_dates(&id_with_dates);
+    assert_eq!(retrieved_dates, expected_dates);
+}
+
+#[test]
 fn test_view_is_verifier() {
     let s = Setup::new();
     let candidate = Address::generate(&s.env);
