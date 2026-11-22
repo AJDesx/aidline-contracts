@@ -3178,3 +3178,70 @@ fn old_admin_cannot_reassign_verifier_after_set_admin() {
     s.client.reassign_verifier(&id, &new_v);
     assert_eq!(s.client.get_campaign(&id).verifier, new_v);
 }
+
+#[test]
+fn cancelled_campaign_rejects_new_activity() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1_000);
+    let sponsor = s.donor(10_000);
+
+    s.client.cancel_campaign(&s.creator, &id);
+    assert_eq!(s.client.get_campaign(&id).status, CampaignStatus::Cancelled);
+
+    assert_eq!(
+        s.client.try_donate(&donor, &id, &100),
+        Err(Ok(Error::CampaignNotActive))
+    );
+    assert_eq!(
+        s.client.try_approve_milestone(&id, &s.proof()),
+        Err(Ok(Error::CampaignNotActive))
+    );
+
+    let expiry = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&donor, &s.client.address, &100, &expiry);
+    assert_eq!(
+        s.client.try_create_pledge(&donor, &id, &100),
+        Err(Ok(Error::CampaignNotActive))
+    );
+
+    assert_eq!(
+        s.client
+            .try_deposit_sponsor_pool(&sponsor, &id, &5_000, &500, &500),
+        Err(Ok(Error::CampaignNotActive))
+    );
+}
+
+#[test]
+fn completed_campaign_rejects_new_activity() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1_000);
+    let sponsor = s.donor(10_000);
+
+    // Fully fund and release all milestones
+    s.client.donate(&donor, &id, &1_000);
+    s.client.approve_milestone(&id, &s.proof());
+    s.client.approve_milestone(&id, &s.proof());
+    s.client.approve_milestone(&id, &s.proof());
+    assert_eq!(s.client.get_campaign(&id).status, CampaignStatus::Completed);
+
+    assert_eq!(
+        s.client.try_donate(&donor, &id, &100),
+        Err(Ok(Error::CampaignNotActive))
+    );
+
+    let expiry = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&donor, &s.client.address, &100, &expiry);
+    assert_eq!(
+        s.client.try_create_pledge(&donor, &id, &100),
+        Err(Ok(Error::CampaignNotActive))
+    );
+
+    assert_eq!(
+        s.client
+            .try_deposit_sponsor_pool(&sponsor, &id, &5_000, &500, &500),
+        Err(Ok(Error::CampaignNotActive))
+    );
+    // Note: try_approve_milestone against a Completed campaign is already tested in milestones_release_in_order_and_complete.
+}

@@ -46,6 +46,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for storage layout, events, and
 - [Threat model](docs/THREAT_MODEL.md): what each role can and cannot do, and which risks are still open
 - [Deployment](docs/DEPLOYMENT.md): build, deploy to testnet, mainnet checklist
 - [CLI guide](docs/CLI.md): copy-and-paste Stellar CLI examples for every contract function
+- [Error code reference](docs/ERRORS.md): complete numeric error codes, returning functions, and caller remedies
+- [Glossary](docs/GLOSSARY.md): definitions of contract domain terms (escrow, milestones, verifier bonds, pledges, etc.)
 - [Decision records](docs/adr/README.md): why the contract is built the way it is
 - [Roadmap](ROADMAP.md)
 
@@ -64,7 +66,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for storage layout, events, and
 | `refund(donor, campaign_id)` | donor | Claims a pro rata refund after cancel or expiry |
 | `get_campaign`, `campaign_count`, `contribution_of`, `is_verifier`, `admin`, `token`, `version` | anyone | Read only views |
 
-Error codes are listed in [`errors.rs`](contracts/aidline/src/errors.rs).
+Error codes are documented in the [Error Code Reference](docs/ERRORS.md) and defined in [`errors.rs`](contracts/aidline/src/errors.rs).
 
 ## Getting started
 
