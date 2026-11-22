@@ -11,3 +11,4 @@ To add one, copy the layout of an existing record, use the next number and open 
 | [0003](0003-refund-rounds-down.md)             | Refunds round down in favor of the contract        | Accepted |
 | [0004](0004-verifier-bonds-and-slashing.md)   | Verifier bonds and slashing                        | Accepted |
 | [0005](0005-sponsor-matching-pools.md)        | Sponsor matching pools                             | Accepted |
+| [0006](0006-emergency-fast-track.md)         | Emergency fast track and the 20 percent cap        | Accepted |
