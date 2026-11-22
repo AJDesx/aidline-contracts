@@ -47,6 +47,35 @@ AIDLINE_NETWORK=testnet
 
 Copy `AIDLINE_CONTRACT_ID` and `AIDLINE_TOKEN_ID` into the [backend](https://github.com/aidline-org/aidline-backend) `.env` and the [frontend](https://github.com/aidline-org/aidline-frontend) `.env.local`. The backend should also get `INDEXER_START_LEDGER` set to the deployment ledger.
 
+## Testnet smoke test
+
+After deploying to testnet, run the end-to-end smoke test script to verify that the deployed contract works correctly on-chain:
+
+```sh
+./scripts/smoke-test-testnet.sh <contract_id> <creator_identity> <beneficiary_identity> <verifier_identity> <donor_identity> [token_contract_id]
+```
+
+Or pass identities and the contract id via environment variables:
+
+```sh
+export AIDLINE_CONTRACT_ID="CALNXTTPKPTCCWSTN3NHQNZHPXM2IXQZQMFBCCK7LI3N5FRB6DB5NLHK"
+export AIDLINE_CREATOR="creator"
+export AIDLINE_BENEFICIARY="beneficiary"
+export AIDLINE_VERIFIER="verifier"
+export AIDLINE_DONOR="donor"
+
+./scripts/smoke-test-testnet.sh
+```
+
+The script exercises the core contract lifecycle using the Stellar CLI:
+1. **Creates a campaign** with two milestones.
+2. **Donates tokens** into escrow.
+3. **Approves the first milestone** as verifier, releasing payout to the beneficiary.
+4. **Cancels the campaign** as creator.
+5. **Claims a pro-rata refund** for the donor.
+
+The script prints the outcome of each step, outputs `=== TESTNET SMOKE TEST PASSED ===` upon completion, and exits non-zero on any failure.
+
 ## Current testnet deployment
 
 |          |                                                                                                                             |
