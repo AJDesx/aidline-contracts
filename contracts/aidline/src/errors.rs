@@ -56,4 +56,7 @@ pub enum Error {
     // Deadline extension
     DeadlineAlreadyExtended = 33,
     InvalidDeadlineExtension = 34,
+
+    // URI length limit
+    UriTooLong = 35,
 }

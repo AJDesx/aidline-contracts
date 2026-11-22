@@ -153,6 +153,62 @@ fn rejects_bad_milestones_and_deadline() {
 }
 
 #[test]
+fn rejects_long_metadata_uri() {
+    let s = Setup::new();
+    let future = s.env.ledger().timestamp() + DAY;
+
+    // 257 bytes should fail with UriTooLong
+    let long_str = "a".repeat(257);
+    let long_uri = String::from_str(&s.env, &long_str);
+    let res = s.client.try_create_campaign(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Climate,
+        &long_uri,
+        &future,
+        &vec![&s.env, 100],
+    );
+    assert_eq!(res, Err(Ok(Error::UriTooLong)));
+
+    // Exact limit 256 bytes should succeed
+    let max_str = "a".repeat(256);
+    let max_uri = String::from_str(&s.env, &max_str);
+    let ok_res = s.client.try_create_campaign(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Climate,
+        &max_uri,
+        &future,
+        &vec![&s.env, 100],
+    );
+    assert!(ok_res.is_ok());
+}
+
+#[test]
+fn rejects_long_proof_uri() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+    s.client.donate(&donor, &id, &300);
+
+    // 257 bytes should fail with UriTooLong
+    let long_str = "p".repeat(257);
+    let long_proof = String::from_str(&s.env, &long_str);
+    let res = s.client.try_approve_milestone(&id, &long_proof);
+    assert_eq!(res, Err(Ok(Error::UriTooLong)));
+
+    // Exact limit 256 bytes should succeed
+    let max_str = "p".repeat(256);
+    let max_proof = String::from_str(&s.env, &max_str);
+    let ok_res = s.client.try_approve_milestone(&id, &max_proof);
+    assert_eq!(ok_res, Ok(Ok(300)));
+}
+
+#[test]
 fn donations_are_held_in_escrow() {
     let s = Setup::new();
     let id = s.campaign();
