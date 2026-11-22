@@ -28,9 +28,9 @@ use events::{
     AdminChanged, BondSlashed, BondWithdrawn, CampaignCancelled, CampaignCreated, ContractPaused,
     ContractUnpaused, ContractUpgraded, DeadlineExtended, Donated, EmergencyAdvanceReleased,
     MatchingApplied, MetadataUpdated, MilestoneApproved, MilestoneRejected, MilestoneReleased,
-    PledgeCreated, PledgePulled, PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited,
-    SponsorPoolReturned, TokenAllowlistUpdated, VerifierBondPosted, VerifierDeregistered,
-    VerifierReassigned, VerifierUpdated,
+    PlatformFeeUpdated, PledgeCreated, PledgePulled, PledgeSettlement, PledgeSkipped, Refunded,
+    SponsorPoolDeposited, SponsorPoolReturned, TokenAllowlistUpdated, TreasuryUpdated,
+    VerifierBondPosted, VerifierDeregistered, VerifierReassigned, VerifierUpdated,
 };
 
 const MAX_MILESTONES: u32 = 20;
@@ -38,6 +38,8 @@ const MAX_MILESTONES: u32 = 20;
 const MAX_URI_LENGTH: u32 = 256;
 /// Maximum matching ratio (100 % = 10 000 bps).
 const MAX_RATIO_BPS: u32 = 10_000;
+/// Maximum platform fee in basis points (200 bps = 2.00%).
+const MAX_PLATFORM_FEE_BPS: u32 = 200;
 /// Reason code emitted in PledgeSkipped when the donor has no allowance.
 const SKIP_REASON_NO_ALLOWANCE: u32 = 1;
 /// Reason code emitted in PledgeSkipped when the pledge is fully consumed.
@@ -170,6 +172,39 @@ impl Aidline {
         env.deployer()
             .update_current_contract(ContractExecutable::Wasm(new_wasm_hash.clone()));
         ContractUpgraded { new_wasm_hash }.publish(&env);
+    }
+
+    // ─── Platform Fee and Treasury (admin only) ───────────────────────────────
+
+    /// Sets the platform fee in basis points.
+    ///
+    /// Only the admin may call this. The fee is capped at 200 basis points (2.00%).
+    /// Setting `fee_bps` to `0` disables the platform fee (default).
+    /// Emits [`PlatformFeeUpdated`].
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the admin.
+    /// - [`Error::InvalidAmount`]: `fee_bps` exceeds 200 basis points.
+    pub fn set_platform_fee(env: Env, fee_bps: u32) -> Result<(), Error> {
+        storage::admin(&env).require_auth();
+        if fee_bps > MAX_PLATFORM_FEE_BPS {
+            return Err(Error::InvalidAmount);
+        }
+        storage::set_platform_fee(&env, fee_bps);
+        PlatformFeeUpdated { fee_bps }.publish(&env);
+        Ok(())
+    }
+
+    /// Sets the platform treasury address that receives milestone release fees.
+    ///
+    /// Only the admin may call this. Emits [`TreasuryUpdated`].
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the admin.
+    pub fn set_treasury(env: Env, treasury: Address) {
+        storage::admin(&env).require_auth();
+        storage::set_treasury(&env, &treasury);
+        TreasuryUpdated { treasury }.publish(&env);
     }
 
     // ─── Token Allowlist (admin only) ─────────────────────────────────────────
@@ -1301,11 +1336,32 @@ impl Aidline {
             return Err(Error::MilestoneNotFunded);
         }
 
-        if remaining > 0 {
+        let fee_bps = storage::platform_fee(env);
+        let treasury = storage::treasury(env);
+        let fee = if fee_bps > 0 && treasury.is_some() {
+            let raw_fee = milestone_amount.checked_mul(fee_bps as i128).unwrap_or(0) / BPS_DENOM;
+            raw_fee.min(remaining)
+        } else {
+            0
+        };
+
+        let beneficiary_payout = remaining - fee;
+
+        if beneficiary_payout > 0 {
             token::Client::new(env, &campaign.token).transfer(
                 &env.current_contract_address(),
                 &campaign.beneficiary,
-                &remaining,
+                &beneficiary_payout,
+            );
+        }
+
+        if fee > 0
+            && let Some(ref treasury_addr) = treasury
+        {
+            token::Client::new(env, &campaign.token).transfer(
+                &env.current_contract_address(),
+                treasury_addr,
+                &fee,
             );
         }
 
@@ -1320,6 +1376,7 @@ impl Aidline {
             campaign_id,
             index,
             amount: milestone_amount,
+            fee,
             proof_uri,
         }
         .publish(env);
@@ -1546,6 +1603,16 @@ impl Aidline {
         milestone_index: u32,
     ) -> Vec<Address> {
         storage::milestone_approvals(&env, campaign_id, milestone_index)
+    }
+
+    /// Returns the current platform fee in basis points (default: 0).
+    pub fn platform_fee(env: Env) -> u32 {
+        storage::platform_fee(&env)
+    }
+
+    /// Returns the current platform treasury address, or `None` if not configured.
+    pub fn treasury(env: Env) -> Option<Address> {
+        storage::treasury(&env)
     }
 
     /// Returns `true` if the contract is currently paused.

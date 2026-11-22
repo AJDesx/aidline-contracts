@@ -44,6 +44,7 @@ pub struct MilestoneReleased {
     pub campaign_id: u64,
     pub index: u32,
     pub amount: i128,
+    pub fee: i128,
     pub proof_uri: String,
 }
 
@@ -51,7 +52,7 @@ impl MilestoneReleased {
     pub fn publish(&self, env: &Env) {
         env.events().publish(
             (symbol_short!("released"), self.campaign_id, self.index),
-            (self.amount, self.proof_uri.clone()),
+            (self.amount, self.fee, self.proof_uri.clone()),
         );
     }
 }
@@ -497,5 +498,29 @@ impl DeadlineExtended {
             (symbol_short!("dl_ext"), self.campaign_id),
             (self.old_deadline, self.new_deadline),
         );
+    }
+}
+
+// ─── Platform fee events ─────────────────────────────────────────────────────
+
+pub struct PlatformFeeUpdated {
+    pub fee_bps: u32,
+}
+
+impl PlatformFeeUpdated {
+    pub fn publish(&self, env: &Env) {
+        env.events()
+            .publish((symbol_short!("fee_upd"),), self.fee_bps);
+    }
+}
+
+pub struct TreasuryUpdated {
+    pub treasury: Address,
+}
+
+impl TreasuryUpdated {
+    pub fn publish(&self, env: &Env) {
+        env.events()
+            .publish((symbol_short!("tres_upd"),), self.treasury.clone());
     }
 }

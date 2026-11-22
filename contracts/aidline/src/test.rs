@@ -2496,3 +2496,116 @@ fn reject_milestone_fails_when_all_milestones_released() {
         Err(Ok(Error::CampaignNotActive))
     );
 }
+
+#[test]
+fn platform_fee_defaults_to_zero_and_treasury_to_none() {
+    let s = Setup::new();
+    assert_eq!(s.client.platform_fee(), 0);
+    assert_eq!(s.client.treasury(), None);
+}
+
+#[test]
+fn admin_can_set_platform_fee_and_treasury() {
+    let s = Setup::new();
+    let treasury = Address::generate(&s.env);
+
+    s.client.set_platform_fee(&150);
+    assert!(
+        !s.env.events().all().events().is_empty(),
+        "PlatformFeeUpdated event should be emitted"
+    );
+    assert_eq!(s.client.platform_fee(), 150);
+
+    s.client.set_treasury(&treasury);
+    assert!(
+        !s.env.events().all().events().is_empty(),
+        "TreasuryUpdated event should be emitted"
+    );
+    assert_eq!(s.client.treasury(), Some(treasury));
+}
+
+#[test]
+fn platform_fee_capped_at_two_percent() {
+    let s = Setup::new();
+
+    // 200 bps (2%) succeeds
+    let res_valid = s.client.try_set_platform_fee(&200);
+    assert_eq!(res_valid, Ok(Ok(())));
+    assert_eq!(s.client.platform_fee(), 200);
+
+    // 201 bps (>2%) fails with InvalidAmount
+    let res_invalid = s.client.try_set_platform_fee(&201);
+    assert_eq!(res_invalid, Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn non_admin_cannot_set_fee_or_treasury() {
+    let s = Setup::new();
+    let treasury = Address::generate(&s.env);
+
+    let res_fee = s.client.mock_auths(&[]).try_set_platform_fee(&100);
+    assert!(res_fee.is_err());
+
+    let res_tres = s.client.mock_auths(&[]).try_set_treasury(&treasury);
+    assert!(res_tres.is_err());
+}
+
+#[test]
+fn milestone_release_deducts_fee_and_sends_to_treasury() {
+    let s = Setup::new();
+    let treasury = Address::generate(&s.env);
+    s.client.set_platform_fee(&200); // 2% fee
+    s.client.set_treasury(&treasury);
+
+    let id = s.campaign(); // milestones: 300, 300, 400
+    let donor = s.donor(1000);
+    s.client.donate(&donor, &id, &1000);
+
+    // Approve milestone 0 (amount = 300)
+    // Fee = 300 * 200 / 10000 = 6
+    // Beneficiary receives 300 - 6 = 294
+    // Treasury receives 6
+    let released = s.client.approve_milestone(&id, &s.proof());
+    assert_eq!(released, 300);
+
+    assert_eq!(s.token.balance(&s.beneficiary), 294);
+    assert_eq!(s.token.balance(&treasury), 6);
+    assert_eq!(s.token.balance(&s.client.address), 700);
+
+    let c = s.client.get_campaign(&id);
+    assert_eq!(c.released, 300);
+}
+
+#[test]
+fn refund_math_unaffected_by_platform_fee() {
+    let s = Setup::new();
+    let treasury = Address::generate(&s.env);
+    s.client.set_platform_fee(&200); // 2%
+    s.client.set_treasury(&treasury);
+
+    let id = s.campaign(); // 300, 300, 400
+    let donor_a = s.donor(600);
+    let donor_b = s.donor(400);
+
+    s.client.donate(&donor_a, &id, &600);
+    s.client.donate(&donor_b, &id, &400);
+
+    // Release milestone 0: 300 total leaves escrow (294 to beneficiary, 6 to treasury)
+    s.client.approve_milestone(&id, &s.proof());
+
+    // Cancel campaign so remaining 700 is refundable
+    s.client.cancel_campaign(&s.creator, &id);
+
+    // Donor A refund: 600 * (1000 - 300) / 1000 = 420
+    let refund_a = s.client.refund(&donor_a, &id);
+    assert_eq!(refund_a, 420);
+    assert_eq!(s.token.balance(&donor_a), 420);
+
+    // Donor B refund: 400 * (1000 - 300) / 1000 = 280
+    let refund_b = s.client.refund(&donor_b, &id);
+    assert_eq!(refund_b, 280);
+    assert_eq!(s.token.balance(&donor_b), 280);
+
+    // Total refunded = 420 + 280 = 700. Remaining in contract = 0.
+    assert_eq!(s.token.balance(&s.client.address), 0);
+}

@@ -85,6 +85,16 @@ Aidline provides an admin-controlled upgrade path via `upgrade(new_wasm_hash)` s
 - **State Preservation**: In Soroban, updating the contract executable preserves all instance and persistent storage entries (campaigns, contributions, bonds, pledges). New contract versions must remain schema-compatible with existing storage keys.
 - **Mitigation**: In production deployments, admin control should be transferred to a multisig account, a timelock contract, or a DAO to mitigate single-key compromise risks.
 
+## Platform Fee and Treasury
+
+The admin can configure an optional platform fee and treasury address to sustainably cover platform operational expenses.
+
+- **Capped Rate:** The platform fee is specified in basis points and capped at 200 bps (2.00%). The default is 0 bps (no fee).
+- **Treasury Address:** Fees are routed to the stored `treasury` address. If no treasury address is set or the fee is 0 bps, no fee is taken.
+- **Collection on Milestone Release:** The fee is calculated and deducted when a milestone is approved and released (`fee = milestone_amount * fee_bps / 10_000`). The net payout is transferred to the beneficiary, and the fee is transferred directly to the treasury address.
+- **Transparency:** The exact fee deducted is included in the `milestone_released` event.
+- **Refund Math Unaffected:** Because the entire scheduled milestone amount leaves contract escrow on release (`beneficiary_payout + fee == milestone_amount`), the total released accounting reflects all escrow deductions. Donor refund calculations `contribution * (raised - released) / raised` remain unaffected and exact.
+
 ## Storage
 
 | Key | Storage type | Value |
@@ -103,6 +113,8 @@ Aidline provides an admin-controlled upgrade path via `upgrade(new_wasm_hash)` s
 | `Pledge(u64)` | persistent | `Pledge` struct (Issue #30) |
 | `MilestoneApprovals(u64, u32)` | persistent | `Vec<Address>` approved verifiers for milestone |
 | `Paused` | instance | `bool`, true when contract is paused in emergencies |
+| `PlatformFee` | instance | `u32` fee in basis points (capped at 200 bps / 2%) |
+| `Treasury` | instance | `Address` treasury address receiving release fees |
 
 TTLs are extended on every read and write (instance: 30 days, persistent: 120 days). For long-running campaigns (such as multi-year climate projects) that may remain quiet for months, anyone (such as an off-chain keeper or backend worker) can call the public `extend_campaign_ttl(campaign_id)` entry point without authorization to bump the persistent entry TTL by another 120 days and prevent expiration.
 
@@ -125,7 +137,7 @@ Sponsors are also included in the refund pool (their `Contribution` entry tracks
 | `campaign_created` | `campaign_id` | `creator`, `kind`, `goal`, `deadline` |
 | `donated` | `campaign_id`, `donor` | `amount` |
 | `emergency_advance_released` | `campaign_id`, `verifier` | `milestone_index`, `amount` |
-| `milestone_released` | `campaign_id` | `index`, `amount`, `proof_uri` |
+| `milestone_released` | `campaign_id` | `index`, `amount`, `fee`, `proof_uri` |
 | `campaign_cancelled` | `campaign_id` | none |
 | `refunded` | `campaign_id`, `donor` | `amount` |
 | `verifier_updated` | `verifier` | `active` |
@@ -149,6 +161,8 @@ Sponsors are also included in the refund pool (their `Contribution` entry tracks
 | `upgraded` | none | `new_wasm_hash` |
 | `meta_upd` | `campaign_id` | `new_metadata_uri` |
 | `dl_ext` | `campaign_id` | `old_deadline`, `new_deadline` |
+| `fee_upd` | none | `fee_bps` |
+| `tres_upd` | none | `treasury` |
 
 The backend indexer reads these to build campaign pages, donor histories and impact reports without scanning contract storage.
 

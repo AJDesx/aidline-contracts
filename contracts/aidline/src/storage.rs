@@ -282,3 +282,26 @@ pub fn is_paused(env: &Env) -> bool {
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&DataKey::Paused, &paused);
 }
+
+// ─── Platform fee and treasury ───────────────────────────────────────────────
+
+pub fn platform_fee(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::PlatformFee)
+        .unwrap_or(0)
+}
+
+pub fn set_platform_fee(env: &Env, fee_bps: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PlatformFee, &fee_bps);
+}
+
+pub fn treasury(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::Treasury)
+}
+
+pub fn set_treasury(env: &Env, treasury: &Address) {
+    env.storage().instance().set(&DataKey::Treasury, treasury);
+}
