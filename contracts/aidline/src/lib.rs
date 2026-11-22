@@ -26,12 +26,13 @@ pub use types::{
 
 use events::{
     AdminAccepted, AdminChanged, AdminProposed, BondSlashed, BondWithdrawn, CampaignCancelled,
-    CampaignCreated, ContractPaused, ContractUnpaused, ContractUpgraded, DeadlineExtended, Donated,
-    EmergencyAdvanceReleased, MatchingApplied, MetadataUpdated, MilestoneApproved,
-    MilestoneRejected, MilestoneReleased, PlatformFeeUpdated, PledgeCancelled, PledgeCreated,
-    PledgePulled, PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited,
-    SponsorPoolReturned, TokenAllowlistUpdated, TreasuryUpdated, VerifierBondPosted,
-    VerifierDeregistered, VerifierReassigned, VerifierUpdated,
+    CampaignCancelledWithReason, CampaignCreated, ContractPaused, ContractUnpaused,
+    ContractUpgraded, DeadlineExtended, Donated, EmergencyAdvanceReleased, MatchingApplied,
+    MetadataUpdated, MilestoneApproved, MilestoneRejected, MilestoneReleased, PlatformFeeUpdated,
+    PledgeCancelled, PledgeCreated, PledgePulled, PledgeSettlement, PledgeSkipped, Refunded,
+    SponsorPoolDeposited, SponsorPoolReturned, TokenAllowlistUpdated, TreasuryUpdated,
+    VerifierBondPosted, VerifierDeregistered, VerifierProfileUpdated, VerifierReassigned,
+    VerifierUpdated,
 };
 
 const MAX_MILESTONES: u32 = 20;
@@ -51,6 +52,8 @@ const MAX_DEADLINE_EXTENSION: u64 = 30 * 86_400;
 
 /// Maximum number of times a campaign's verifier may be reassigned.
 pub const MAX_VERIFIER_REASSIGNMENTS: u32 = 2;
+/// Maximum page limit for paginated donor enumeration.
+const MAX_DONORS_PAGE_LIMIT: u32 = 50;
 
 /// The emergency advance is capped at 20% of the campaign goal (200 bps out of
 /// 1000, or equivalently goal / 5).  Integer arithmetic: advance = goal / 5
@@ -114,6 +117,41 @@ impl Aidline {
             active: false,
         }
         .publish(&env);
+    }
+
+    /// Sets an off-chain profile URI for a registered `verifier`.
+    ///
+    /// Only the admin may call this, and only for verifiers currently registered.
+    /// `profile_uri` must not exceed [`MAX_URI_LENGTH`] bytes. Emits [`VerifierProfileUpdated`].
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the admin.
+    /// - [`Error::UriTooLong`]: `profile_uri` exceeds [`MAX_URI_LENGTH`] bytes.
+    /// - [`Error::NotVerifier`]: `verifier` is not currently registered.
+    pub fn set_verifier_profile(
+        env: Env,
+        verifier: Address,
+        profile_uri: String,
+    ) -> Result<(), Error> {
+        storage::admin(&env).require_auth();
+
+        if profile_uri.len() > MAX_URI_LENGTH {
+            return Err(Error::UriTooLong);
+        }
+
+        if !storage::is_verifier(&env, &verifier) {
+            return Err(Error::NotVerifier);
+        }
+
+        storage::set_verifier_profile(&env, &verifier, &profile_uri);
+
+        VerifierProfileUpdated {
+            verifier,
+            profile_uri,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     /// Transfers admin control to `new_admin`.
@@ -595,6 +633,7 @@ impl Aidline {
             deadline,
             milestones,
             0,
+            0,
         )
     }
 
@@ -633,6 +672,44 @@ impl Aidline {
             deadline,
             milestones,
             min_donation,
+            0,
+        )
+    }
+
+    /// Creates a new campaign with a minimum gap (cooldown) in seconds between milestone approvals.
+    ///
+    /// `approval_cooldown` defines the required time that must elapse between consecutive
+    /// milestone approvals. A cooldown of `0` imposes no delay between approvals.
+    ///
+    /// # Errors
+    /// All errors from [`create_campaign`].
+    pub fn create_campaign_with_cooldown(
+        env: Env,
+        creator: Address,
+        beneficiary: Address,
+        verifier: Address,
+        token: Address,
+        kind: CampaignKind,
+        metadata_uri: String,
+        deadline: u64,
+        milestones: Vec<i128>,
+        approval_cooldown: u64,
+    ) -> Result<u64, Error> {
+        let mut verifiers = Vec::new(&env);
+        verifiers.push_back(verifier.clone());
+        Self::create_multisig_campaign_inner(
+            env,
+            creator,
+            beneficiary,
+            verifiers,
+            1,
+            token,
+            kind,
+            metadata_uri,
+            deadline,
+            milestones,
+            0,
+            approval_cooldown,
         )
     }
 
@@ -673,6 +750,7 @@ impl Aidline {
             deadline,
             milestones,
             0,
+            0,
         )
     }
 
@@ -689,6 +767,7 @@ impl Aidline {
         deadline: u64,
         milestones: Vec<i128>,
         min_donation: i128,
+        approval_cooldown: u64,
     ) -> Result<u64, Error> {
         creator.require_auth();
         storage::bump_instance(&env);
@@ -763,6 +842,8 @@ impl Aidline {
             deadline_extended: false,
             min_donation,
             verifier_reassignments: 0,
+            approval_cooldown,
+            last_approval_time: 0,
         };
         storage::save_campaign(&env, &campaign);
 
@@ -948,6 +1029,7 @@ impl Aidline {
         storage::save_campaign(&env, &campaign);
         let previous = storage::contribution(&env, campaign_id, &donor);
         storage::set_contribution(&env, campaign_id, &donor, previous + accepted);
+        storage::add_campaign_donor(&env, campaign_id, &donor);
 
         Donated {
             campaign_id,
@@ -1454,6 +1536,15 @@ impl Aidline {
             .get(index)
             .ok_or(Error::NoMilestonesLeft)?;
 
+        if campaign.approval_cooldown > 0 && campaign.last_approval_time > 0 {
+            let earliest_approval = campaign
+                .last_approval_time
+                .saturating_add(campaign.approval_cooldown);
+            if env.ledger().timestamp() < earliest_approval {
+                return Err(Error::ApprovalCooldownNotMet);
+            }
+        }
+
         let mut approvals = storage::milestone_approvals(env, campaign_id, index);
         if approvals.contains(&verifier) {
             return Err(Error::DuplicateApproval);
@@ -1534,6 +1625,7 @@ impl Aidline {
 
         campaign.released += remaining;
         campaign.milestones_released += 1;
+        campaign.last_approval_time = env.ledger().timestamp();
         if campaign.milestones_released == campaign.milestones.len() {
             campaign.status = CampaignStatus::Completed;
         }
@@ -1573,6 +1665,46 @@ impl Aidline {
         storage::save_campaign(&env, &campaign);
 
         CampaignCancelled { campaign_id }.publish(&env);
+        Ok(())
+    }
+
+    /// Stops a campaign early with an explanatory reason URI so donors and indexers know why.
+    ///
+    /// Only the campaign's creator or the admin may call this. The campaign must currently
+    /// be `Active`. `reason_uri` must not exceed [`MAX_URI_LENGTH`]. Emits [`CampaignCancelledWithReason`].
+    ///
+    /// # Errors
+    /// - [`Error::UriTooLong`]: `reason_uri` exceeds [`MAX_URI_LENGTH`] bytes.
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    /// - [`Error::Unauthorized`]: caller is neither the creator nor the admin.
+    /// - [`Error::CampaignNotActive`]: campaign is not in `Active` status.
+    pub fn cancel_campaign_with_reason(
+        env: Env,
+        caller: Address,
+        campaign_id: u64,
+        reason_uri: String,
+    ) -> Result<(), Error> {
+        if reason_uri.len() > MAX_URI_LENGTH {
+            return Err(Error::UriTooLong);
+        }
+        caller.require_auth();
+        let mut campaign = storage::campaign(&env, campaign_id)?;
+        if caller != campaign.creator && caller != storage::admin(&env) {
+            return Err(Error::Unauthorized);
+        }
+        if campaign.status != CampaignStatus::Active {
+            return Err(Error::CampaignNotActive);
+        }
+
+        campaign.status = CampaignStatus::Cancelled;
+        storage::save_campaign(&env, &campaign);
+
+        CampaignCancelledWithReason {
+            campaign_id,
+            caller,
+            reason_uri,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -1804,6 +1936,31 @@ impl Aidline {
         storage::contribution(&env, campaign_id, &donor)
     }
 
+    /// Returns a paginated list of unique donor addresses for `campaign_id`.
+    ///
+    /// Addresses are returned in stable order (order of first donation). `limit` is clamped
+    /// to at most [`MAX_DONORS_PAGE_LIMIT`]. Each donor appears exactly once even after repeat donations.
+    pub fn donors(env: Env, campaign_id: u64, start: u32, limit: u32) -> Vec<Address> {
+        let all_donors = storage::campaign_donors(&env, campaign_id);
+        let total = all_donors.len();
+        if start >= total || limit == 0 {
+            return Vec::new(&env);
+        }
+
+        let effective_limit = limit.min(MAX_DONORS_PAGE_LIMIT);
+        let end = (start + effective_limit).min(total);
+
+        let mut page = Vec::new(&env);
+        let mut i = start;
+        while i < end {
+            if let Some(donor) = all_donors.get(i) {
+                page.push_back(donor);
+            }
+            i += 1;
+        }
+        page
+    }
+
     /// Returns `true` if donors can claim refunds for `campaign_id`.
     ///
     /// Mirrors the availability checks in [`refund`]: a campaign is refundable
@@ -1845,6 +2002,11 @@ impl Aidline {
         storage::is_verifier(&env, &who)
     }
 
+    /// Returns the off-chain profile URI for `verifier`, or `None` if unset.
+    pub fn verifier_profile(env: Env, verifier: Address) -> Option<String> {
+        storage::verifier_profile(&env, &verifier)
+    }
+
     /// Returns the current admin address.
     pub fn admin(env: Env) -> Address {
         storage::admin(&env)
@@ -1882,6 +2044,25 @@ impl Aidline {
         milestone_index: u32,
     ) -> Vec<Address> {
         storage::milestone_approvals(&env, campaign_id, milestone_index)
+    }
+
+    /// Returns the configured approval cooldown in seconds for `campaign_id`.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn approval_cooldown(env: Env, campaign_id: u64) -> Result<u64, Error> {
+        let campaign = storage::campaign(&env, campaign_id)?;
+        Ok(campaign.approval_cooldown)
+    }
+
+    /// Returns the ledger timestamp when the last milestone was approved/released,
+    /// or `0` if no milestone has been approved yet.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn last_approval_time(env: Env, campaign_id: u64) -> Result<u64, Error> {
+        let campaign = storage::campaign(&env, campaign_id)?;
+        Ok(campaign.last_approval_time)
     }
 
     /// Returns the current platform fee in basis points (default: 0).
@@ -2017,6 +2198,7 @@ impl Aidline {
             // Record as contribution so donor shares in refunds.
             let prev = storage::contribution(env, campaign_id, &pledge.donor);
             storage::set_contribution(env, campaign_id, &pledge.donor, prev + pull);
+            storage::add_campaign_donor(env, campaign_id, &pledge.donor);
 
             // Increase campaign.raised.
             campaign.raised = campaign.raised.checked_add(pull).unwrap_or(campaign.raised);

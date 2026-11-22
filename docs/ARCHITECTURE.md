@@ -115,6 +115,7 @@ The admin can configure an optional platform fee and treasury address to sustain
 | `Paused` | instance | `bool`, true when contract is paused in emergencies |
 | `PlatformFee` | instance | `u32` fee in basis points (capped at 200 bps / 2%) |
 | `Treasury` | instance | `Address` treasury address receiving release fees |
+| `CampaignDonors(u64)` | persistent | `Vec<Address>` unique donor addresses in order of first donation |
 
 TTLs are extended on every read and write (instance: 30 days, persistent: 120 days). For long-running campaigns (such as multi-year climate projects) that may remain quiet for months, anyone (such as an off-chain keeper or backend worker) can call the public `extend_campaign_ttl(campaign_id)` entry point without authorization to bump the persistent entry TTL by another 120 days and prevent expiration.
 
@@ -386,6 +387,17 @@ Creators can configure an optional minimum donation floor when creating a campai
 - **Enforcement**: `donate` checks the incoming amount against `min_donation`. If `amount < campaign.min_donation` and the donation does not fill the remaining funding goal (`amount < remaining`), the call fails with `Error::DonationBelowMinimum`.
 - **Final donation exception**: If the remaining balance to reach the campaign goal is smaller than `min_donation`, a final donation that reaches or exceeds the remaining goal (`amount >= remaining`) is accepted, ensuring campaigns can always reach 100% funding without getting stuck.
 - **Backwards compatibility**: Campaigns created through standard entry points (`create_campaign`, `create_multisig_campaign`, `create_campaign_with_due_dates`) default to `min_donation = 0`, which imposes no floor and preserves original behavior.
+
+---
+
+## Paginated Donor Enumeration
+
+Frontends and indexers frequently need to enumerate who donated to a campaign without having to replay every single `Donated` event from ledger inception.
+
+- **Storage layout**: Unique donor addresses for each campaign are indexed in persistent storage under `DataKey::CampaignDonors(campaign_id)` as an ordered `Vec<Address>`.
+- **Deduplication**: When donations are received via `donate` (or pledges settled via `pull_pledges`), the contract checks whether the donor address is already present in the campaign's donor vector. An address is appended only on its first donation. Repeat donations from the same donor do not duplicate the entry.
+- **Stable ordering**: Donors are stored in insertion order (the order in which their first contribution was accepted).
+- **Pagination**: The public view function `donors(campaign_id, start, limit) -> Vec<Address>` provides paginated access. To prevent excessive gas or resource consumption in a single invocation, `limit` is hard-capped at 50 (`MAX_DONORS_PAGE_LIMIT`). Any `limit` requested above 50 is clamped down to 50.
 
 ---
 

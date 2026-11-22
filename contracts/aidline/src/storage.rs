@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, String, Vec};
 
 use crate::errors::Error;
 use crate::types::{Campaign, DataKey, Pledge, SponsorPool, VerifierBond};
@@ -86,6 +86,19 @@ pub fn set_verifier(env: &Env, who: &Address, active: bool) {
     }
 }
 
+pub fn verifier_profile(env: &Env, who: &Address) -> Option<String> {
+    let key = DataKey::VerifierProfile(who.clone());
+    let profile = env.storage().persistent().get(&key)?;
+    bump(env, &key);
+    Some(profile)
+}
+
+pub fn set_verifier_profile(env: &Env, who: &Address, uri: &String) {
+    let key = DataKey::VerifierProfile(who.clone());
+    env.storage().persistent().set(&key, uri);
+    bump(env, &key);
+}
+
 pub fn campaign(env: &Env, id: u64) -> Result<Campaign, Error> {
     let key = DataKey::Campaign(id);
     let campaign = env
@@ -124,6 +137,30 @@ pub fn set_contribution(env: &Env, id: u64, donor: &Address, amount: i128) {
         env.storage().persistent().remove(&key);
     } else {
         env.storage().persistent().set(&key, &amount);
+        bump(env, &key);
+    }
+}
+
+pub fn campaign_donors(env: &Env, campaign_id: u64) -> Vec<Address> {
+    let key = DataKey::CampaignDonors(campaign_id);
+    if let Some(donors) = env.storage().persistent().get(&key) {
+        bump(env, &key);
+        donors
+    } else {
+        Vec::new(env)
+    }
+}
+
+pub fn add_campaign_donor(env: &Env, campaign_id: u64, donor: &Address) {
+    let key = DataKey::CampaignDonors(campaign_id);
+    let mut donors: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    if !donors.contains(donor) {
+        donors.push_back(donor.clone());
+        env.storage().persistent().set(&key, &donors);
         bump(env, &key);
     }
 }

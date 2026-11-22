@@ -75,6 +75,21 @@ impl CampaignCancelled {
     }
 }
 
+pub struct CampaignCancelledWithReason {
+    pub campaign_id: u64,
+    pub caller: Address,
+    pub reason_uri: String,
+}
+
+impl CampaignCancelledWithReason {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("canceled"), self.campaign_id),
+            (self.caller.clone(), self.reason_uri.clone()),
+        );
+    }
+}
+
 pub struct Refunded {
     pub campaign_id: u64,
     pub donor: Address,
@@ -104,6 +119,20 @@ impl VerifierUpdated {
         env.events().publish(
             (symbol_short!("verifier"), self.verifier.clone()),
             self.active,
+        );
+    }
+}
+
+pub struct VerifierProfileUpdated {
+    pub verifier: Address,
+    pub profile_uri: String,
+}
+
+impl VerifierProfileUpdated {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("vf_prof"), self.verifier.clone()),
+            self.profile_uri.clone(),
         );
     }
 }
