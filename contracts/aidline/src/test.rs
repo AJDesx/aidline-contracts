@@ -1222,6 +1222,49 @@ fn new_verifier_can_approve_after_reassignment() {
     assert_eq!(s.client.get_campaign(&id).verifier, new_v);
 }
 
+#[test]
+fn reassign_verifier_caps_at_maximum() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    // Initial reassignment count is 0
+    assert_eq!(s.client.verifier_reassignments(&id), 0);
+    assert_eq!(s.client.get_campaign(&id).verifier_reassignments, 0);
+
+    let v1 = Address::generate(&s.env);
+    let v2 = Address::generate(&s.env);
+    let v3 = Address::generate(&s.env);
+    s.client.add_verifier(&v1);
+    s.client.add_verifier(&v2);
+    s.client.add_verifier(&v3);
+
+    // Reassignment 1 succeeds
+    s.client.reassign_verifier(&id, &v1);
+    assert_eq!(s.client.verifier_reassignments(&id), 1);
+    assert_eq!(s.client.get_campaign(&id).verifier_reassignments, 1);
+    assert_eq!(s.client.get_campaign(&id).verifier, v1);
+
+    // Reassignment 2 succeeds (reaches maximum of 2)
+    s.client.reassign_verifier(&id, &v2);
+    assert_eq!(s.client.verifier_reassignments(&id), 2);
+    assert_eq!(s.client.get_campaign(&id).verifier_reassignments, 2);
+    assert_eq!(s.client.get_campaign(&id).verifier, v2);
+
+    // Reassignment 3 rejected with MaxVerifierReassignmentsExceeded
+    let res3 = s.client.try_reassign_verifier(&id, &v3);
+    assert_eq!(res3, Err(Ok(Error::MaxVerifierReassignmentsExceeded)));
+    assert_eq!(s.client.verifier_reassignments(&id), 2);
+    assert_eq!(s.client.get_campaign(&id).verifier_reassignments, 2);
+    assert_eq!(s.client.get_campaign(&id).verifier, v2);
+}
+
+#[test]
+fn verifier_reassignments_view_errors_for_nonexistent_campaign() {
+    let s = Setup::new();
+    let res = s.client.try_verifier_reassignments(&999_999);
+    assert_eq!(res, Err(Ok(Error::CampaignNotFound)));
+}
+
 // ─── Verifier bonds (issue #29) ───────────────────────────────────────────────
 
 use crate::BondStatus;

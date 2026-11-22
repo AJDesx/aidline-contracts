@@ -49,6 +49,9 @@ const SKIP_REASON_EXHAUSTED: u32 = 2;
 /// Maximum duration (in seconds) for a one-time deadline extension (30 days).
 const MAX_DEADLINE_EXTENSION: u64 = 30 * 86_400;
 
+/// Maximum number of times a campaign's verifier may be reassigned.
+pub const MAX_VERIFIER_REASSIGNMENTS: u32 = 2;
+
 /// The emergency advance is capped at 20% of the campaign goal (200 bps out of
 /// 1000, or equivalently goal / 5).  Integer arithmetic: advance = goal / 5
 /// (rounds down, so the cap is never exceeded).
@@ -759,6 +762,7 @@ impl Aidline {
             threshold,
             deadline_extended: false,
             min_donation,
+            verifier_reassignments: 0,
         };
         storage::save_campaign(&env, &campaign);
 
@@ -1676,6 +1680,10 @@ impl Aidline {
         let mut campaign = storage::campaign(&env, campaign_id)?;
         Self::ensure_open(&env, &campaign)?;
 
+        if campaign.verifier_reassignments >= MAX_VERIFIER_REASSIGNMENTS {
+            return Err(Error::MaxVerifierReassignmentsExceeded);
+        }
+
         if !storage::is_verifier(&env, &new_verifier) {
             return Err(Error::NotVerifier);
         }
@@ -1686,6 +1694,7 @@ impl Aidline {
         verifiers.push_back(new_verifier.clone());
         campaign.verifiers = verifiers;
         campaign.threshold = 1;
+        campaign.verifier_reassignments += 1;
         storage::save_campaign(&env, &campaign);
 
         VerifierReassigned {
@@ -1768,6 +1777,15 @@ impl Aidline {
         } else {
             Ok(campaign.status)
         }
+    }
+
+    /// Returns the number of times `campaign_id`'s verifier has been reassigned.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn verifier_reassignments(env: Env, campaign_id: u64) -> Result<u32, Error> {
+        let campaign = storage::campaign(&env, campaign_id)?;
+        Ok(campaign.verifier_reassignments)
     }
 
     /// Returns the milestone due dates for `campaign_id`.

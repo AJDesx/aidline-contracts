@@ -60,6 +60,8 @@ pub struct Campaign {
     pub deadline_extended: bool,
     /// Optional minimum donation floor. Zero means no floor.
     pub min_donation: i128,
+    /// Number of times this campaign's verifier has been reassigned.
+    pub verifier_reassignments: u32,
 }
 
 /// A sponsor matching pool for a specific campaign.

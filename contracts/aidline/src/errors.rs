@@ -71,4 +71,7 @@ pub enum Error {
 
     // Pledges
     PledgeAlreadyCancelled = 39,
+
+    // Verifier reassignment
+    MaxVerifierReassignmentsExceeded = 40,
 }
