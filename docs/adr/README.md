@@ -10,3 +10,4 @@ To add one, copy the layout of an existing record, use the next number and open 
 | [0002](0002-expiry-is-computed-not-stored.md)  | Campaign expiry is computed, not stored            | Accepted |
 | [0003](0003-refund-rounds-down.md)             | Refunds round down in favor of the contract        | Accepted |
 | [0004](0004-verifier-bonds-and-slashing.md)   | Verifier bonds and slashing                        | Accepted |
+| [0005](0005-sponsor-matching-pools.md)        | Sponsor matching pools                             | Accepted |
