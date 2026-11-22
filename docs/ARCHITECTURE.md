@@ -164,7 +164,7 @@ Sponsors are also included in the refund pool (their `Contribution` entry tracks
 | `fee_upd` | none | `fee_bps` |
 | `tres_upd` | none | `treasury` |
 
-The backend indexer reads these to build campaign pages, donor histories and impact reports without scanning contract storage.
+The backend indexer reads these to build campaign pages, donor histories and impact reports without scanning contract storage. See [docs/EVENTS.md](EVENTS.md) for the complete reference of all event structs, topic structures, data payloads, and emitting functions.
 
 ## Design decisions
 
