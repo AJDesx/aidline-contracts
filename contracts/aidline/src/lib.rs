@@ -1081,8 +1081,7 @@ impl Aidline {
 
         let campaign = storage::campaign(&env, campaign_id)?;
 
-        let expired = campaign.status == CampaignStatus::Active
-            && env.ledger().timestamp() > campaign.deadline;
+        let expired = Self::is_expired(&env, &campaign);
         let ended = campaign.status != CampaignStatus::Active || expired;
         if !ended {
             return Err(Error::PoolNotReturnable);
@@ -1505,8 +1504,7 @@ impl Aidline {
         donor.require_auth();
         let mut campaign = storage::campaign(&env, campaign_id)?;
 
-        let expired = campaign.status == CampaignStatus::Active
-            && env.ledger().timestamp() > campaign.deadline;
+        let expired = Self::is_expired(&env, &campaign);
 
         let is_overdue = Self::is_overdue(&env, &campaign);
         let ended = campaign.status == CampaignStatus::Cancelled || expired;
@@ -1649,6 +1647,35 @@ impl Aidline {
         storage::campaign_count(&env)
     }
 
+    /// Returns the effective status of `campaign_id`.
+    ///
+    /// If the campaign is stored as [`CampaignStatus::Active`] but the ledger timestamp
+    /// has passed its deadline, returns [`CampaignStatus::Expired`]. Otherwise returns
+    /// the stored status ([`CampaignStatus::Active`], [`CampaignStatus::Completed`], or
+    /// [`CampaignStatus::Cancelled`]).
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn effective_status(env: Env, campaign_id: u64) -> Result<CampaignStatus, Error> {
+        let campaign = storage::campaign(&env, campaign_id)?;
+        if Self::is_expired(&env, &campaign) {
+            Ok(CampaignStatus::Expired)
+        } else {
+            Ok(campaign.status)
+        }
+    }
+
+    /// Returns the milestone due dates for `campaign_id`.
+    ///
+    /// Returns an empty vector for campaigns created without per-milestone due dates.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn milestone_due_dates(env: Env, campaign_id: u64) -> Result<Vec<u64>, Error> {
+        storage::campaign(&env, campaign_id)?;
+        Ok(storage::milestone_due_dates(&env, campaign_id).unwrap_or_else(|| Vec::new(&env)))
+    }
+
     /// Returns the total amount `donor` has contributed to `campaign_id`.
     pub fn contribution_of(env: Env, campaign_id: u64, donor: Address) -> i128 {
         storage::contribution(&env, campaign_id, &donor)
@@ -1664,12 +1691,30 @@ impl Aidline {
         let Ok(campaign) = storage::campaign(&env, campaign_id) else {
             return false;
         };
-        let expired = campaign.status == CampaignStatus::Active
-            && env.ledger().timestamp() > campaign.deadline;
-        let is_overdue = Self::is_overdue(&env, &campaign);
-        let ended = campaign.status == CampaignStatus::Cancelled || expired;
+        Self::is_campaign_refundable(&env, &campaign)
+    }
 
-        ended || is_overdue
+    /// Returns the amount `donor` would receive if they claimed a refund right now.
+    ///
+    /// Uses the same rounding rules as [`refund`] (rounds down in favor of the contract).
+    /// Returns 0 if a refund is not available, if the campaign does not exist, or if
+    /// `donor` has no contribution or no unreleased balance remains.
+    pub fn refundable_amount(env: Env, campaign_id: u64, donor: Address) -> i128 {
+        let Ok(campaign) = storage::campaign(&env, campaign_id) else {
+            return 0;
+        };
+        if !Self::is_campaign_refundable(&env, &campaign) {
+            return 0;
+        }
+        let contributed = storage::contribution(&env, campaign_id, &donor);
+        if contributed == 0 || campaign.raised == 0 {
+            return 0;
+        }
+        let unreleased = campaign.raised - campaign.released;
+        if unreleased <= 0 {
+            return 0;
+        }
+        contributed * unreleased / campaign.raised
     }
 
     /// Returns `true` if `who` is currently a registered verifier.
@@ -1732,7 +1777,7 @@ impl Aidline {
         if campaign.status != CampaignStatus::Active {
             return Err(Error::CampaignNotActive);
         }
-        if env.ledger().timestamp() > campaign.deadline {
+        if Self::is_expired(env, campaign) {
             return Err(Error::CampaignExpired);
         }
         Ok(())
@@ -1872,5 +1917,17 @@ impl Aidline {
             return true;
         }
         false
+    }
+
+    fn is_expired(env: &Env, campaign: &Campaign) -> bool {
+        campaign.status == CampaignStatus::Active && env.ledger().timestamp() > campaign.deadline
+    }
+
+    fn is_campaign_refundable(env: &Env, campaign: &Campaign) -> bool {
+        let expired = Self::is_expired(env, campaign);
+        let is_overdue = Self::is_overdue(env, campaign);
+        let ended = campaign.status == CampaignStatus::Cancelled || expired;
+
+        ended || is_overdue
     }
 }

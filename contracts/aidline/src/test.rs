@@ -2,8 +2,8 @@
 
 use proptest::prelude::*;
 use soroban_sdk::{
-    Address, Env, String, contract, contractimpl,
-    testutils::{Address as _, Events as _, Ledger},
+    Address, Env, IntoVal, InvokeError, String, contract, contractimpl,
+    testutils::{Address as _, Events as _, Ledger, MockAuth, MockAuthInvoke},
     token::{StellarAssetClient, TokenClient},
     vec,
 };
@@ -1852,6 +1852,191 @@ fn test_view_contribution_of() {
 }
 
 #[test]
+fn test_view_refundable_amount() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor1 = s.donor(1000);
+    let donor2 = s.donor(1000);
+    let stranger = Address::generate(&s.env);
+
+    // 1. Non-existent campaign returns 0
+    assert_eq!(s.client.refundable_amount(&999_999, &donor1), 0);
+
+    // 2. Active campaign within deadline is not refundable -> returns 0
+    s.client.donate(&donor1, &id, &500);
+    s.client.donate(&donor2, &id, &500);
+    assert_eq!(s.client.refundable_amount(&id, &donor1), 0);
+    assert_eq!(s.client.refundable_amount(&id, &stranger), 0);
+
+    // 3. Cancelled campaign matches refund amount
+    // Release milestone 0 (300). Raised: 1000, Released: 300, Unreleased: 700.
+    s.client.approve_milestone(&id, &s.proof());
+    let cancel_id = id;
+    s.client.cancel_campaign(&s.creator, &cancel_id);
+
+    // donor1 contributed 500: 500 * 700 / 1000 = 350
+    assert_eq!(s.client.refundable_amount(&cancel_id, &donor1), 350);
+    assert_eq!(s.client.refundable_amount(&cancel_id, &donor2), 350);
+    assert_eq!(s.client.refundable_amount(&cancel_id, &stranger), 0);
+
+    // Calling refund pays exactly what refundable_amount reported
+    let refunded = s.client.refund(&donor1, &cancel_id);
+    assert_eq!(refunded, 350);
+    // After refund, donor1 has no recorded contribution -> refundable_amount is 0
+    assert_eq!(s.client.refundable_amount(&cancel_id, &donor1), 0);
+    // donor2 still has 350 refundable
+    assert_eq!(s.client.refundable_amount(&cancel_id, &donor2), 350);
+
+    // 4. Expired campaign matches refund amount
+    let s_exp = Setup::new();
+    let exp_id = s_exp.campaign();
+    let d = s_exp.donor(600);
+    s_exp.client.donate(&d, &exp_id, &600);
+    assert_eq!(s_exp.client.refundable_amount(&exp_id, &d), 0);
+
+    s_exp.pass_deadline();
+    // 600 * 1000 / 600 = 600 (full refund)
+    assert_eq!(s_exp.client.refundable_amount(&exp_id, &d), 600);
+    assert_eq!(s_exp.client.refund(&d, &exp_id), 600);
+    assert_eq!(s_exp.client.refundable_amount(&exp_id, &d), 0);
+
+    // 5. Overdue milestone in active campaign matches refund amount
+    let s_overdue = Setup::new();
+    let now = s_overdue.env.ledger().timestamp();
+    let due_dates = vec![&s_overdue.env, now + 10 * DAY, now + 20 * DAY];
+    let milestones = vec![&s_overdue.env, 300, 700];
+    let overdue_id = s_overdue.client.create_campaign_with_due_dates(
+        &s_overdue.creator,
+        &s_overdue.beneficiary,
+        &s_overdue.verifier,
+        &s_overdue.token.address,
+        &CampaignKind::Climate,
+        &String::from_str(&s_overdue.env, "ipfs://overdue-view"),
+        &(now + 30 * DAY),
+        &milestones,
+        &due_dates,
+    );
+    let d_overdue = s_overdue.donor(500);
+    s_overdue.client.donate(&d_overdue, &overdue_id, &500);
+    assert_eq!(
+        s_overdue.client.refundable_amount(&overdue_id, &d_overdue),
+        0
+    );
+
+    s_overdue.env.ledger().set_timestamp(now + 11 * DAY);
+    assert_eq!(
+        s_overdue.client.refundable_amount(&overdue_id, &d_overdue),
+        500
+    );
+    assert_eq!(s_overdue.client.refund(&d_overdue, &overdue_id), 500);
+    assert_eq!(
+        s_overdue.client.refundable_amount(&overdue_id, &d_overdue),
+        0
+    );
+
+    // 6. Completed campaign returns 0
+    let s_comp = Setup::new();
+    let comp_id = s_comp.campaign();
+    let d_comp = s_comp.donor(1000);
+    s_comp.client.donate(&d_comp, &comp_id, &1000);
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    assert_eq!(s_comp.client.refundable_amount(&comp_id, &d_comp), 0);
+}
+
+#[test]
+fn test_view_effective_status() {
+    let s = Setup::new();
+
+    // 1. Unknown campaign returns CampaignNotFound
+    assert_eq!(
+        s.client.try_effective_status(&999_999),
+        Err(Ok(Error::CampaignNotFound))
+    );
+
+    // 2. Active campaign within deadline -> Active
+    let id = s.campaign();
+    assert_eq!(s.client.effective_status(&id), CampaignStatus::Active);
+    assert_eq!(s.client.get_campaign(&id).status, CampaignStatus::Active);
+
+    // 3. Active campaign past deadline -> Expired
+    s.pass_deadline();
+    assert_eq!(s.client.effective_status(&id), CampaignStatus::Expired);
+    // Note: stored status remains Active as per ADR-0002
+    assert_eq!(s.client.get_campaign(&id).status, CampaignStatus::Active);
+
+    // 4. Cancelled campaign -> Cancelled (before and after deadline)
+    let s_cancel = Setup::new();
+    let cancel_id = s_cancel.campaign();
+    s_cancel
+        .client
+        .cancel_campaign(&s_cancel.creator, &cancel_id);
+    assert_eq!(
+        s_cancel.client.effective_status(&cancel_id),
+        CampaignStatus::Cancelled
+    );
+    s_cancel.pass_deadline();
+    assert_eq!(
+        s_cancel.client.effective_status(&cancel_id),
+        CampaignStatus::Cancelled
+    );
+
+    // 5. Completed campaign -> Completed (before and after deadline)
+    let s_comp = Setup::new();
+    let comp_id = s_comp.campaign();
+    let d = s_comp.donor(1000);
+    s_comp.client.donate(&d, &comp_id, &1000);
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    assert_eq!(
+        s_comp.client.effective_status(&comp_id),
+        CampaignStatus::Completed
+    );
+    s_comp.pass_deadline();
+    assert_eq!(
+        s_comp.client.effective_status(&comp_id),
+        CampaignStatus::Completed
+    );
+}
+
+#[test]
+fn test_view_milestone_due_dates() {
+    let s = Setup::new();
+
+    // 1. Unknown campaign returns CampaignNotFound
+    assert_eq!(
+        s.client.try_milestone_due_dates(&999_999),
+        Err(Ok(Error::CampaignNotFound))
+    );
+
+    // 2. Campaign created with create_campaign returns empty vector
+    let id_standard = s.campaign();
+    let due_dates_empty = s.client.milestone_due_dates(&id_standard);
+    assert_eq!(due_dates_empty.len(), 0);
+
+    // 3. Campaign created with create_campaign_with_due_dates returns stored due dates
+    let now = s.env.ledger().timestamp();
+    let expected_dates = vec![&s.env, now + 5 * DAY, now + 15 * DAY, now + 25 * DAY];
+    let milestones = vec![&s.env, 300, 300, 400];
+    let id_with_dates = s.client.create_campaign_with_due_dates(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Emergency,
+        &String::from_str(&s.env, "ipfs://due-dates-view"),
+        &(now + 30 * DAY),
+        &milestones,
+        &expected_dates,
+    );
+
+    let retrieved_dates = s.client.milestone_due_dates(&id_with_dates);
+    assert_eq!(retrieved_dates, expected_dates);
+}
+
+#[test]
 fn test_view_is_verifier() {
     let s = Setup::new();
     let candidate = Address::generate(&s.env);
@@ -2797,4 +2982,199 @@ fn min_donation_stored_in_campaign_record() {
     // Configured min_donation is preserved.
     let id_custom = s.campaign_with_min_donation(250);
     assert_eq!(s.client.get_campaign(&id_custom).min_donation, 250);
+}
+
+// ─── Admin transfer tests: old admin access revoked ─────────────────────────
+
+#[test]
+fn old_admin_cannot_add_verifier_after_set_admin() {
+    let s = Setup::new();
+    let old_admin = s.admin.clone();
+    let new_admin = Address::generate(&s.env);
+    s.client.set_admin(&new_admin);
+
+    let candidate = Address::generate(&s.env);
+    let auth = MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "add_verifier",
+            args: (candidate.clone(),).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+
+    let expected_auth_err = soroban_sdk::Error::from_type_and_code(
+        soroban_sdk::xdr::ScErrorType::Context,
+        soroban_sdk::xdr::ScErrorCode::InvalidAction,
+    );
+    let res = s.client.mock_auths(&[auth]).try_add_verifier(&candidate);
+    let err = res.unwrap_err().unwrap();
+    assert_eq!(err, expected_auth_err);
+    assert!(!s.client.is_verifier(&candidate));
+
+    // New admin can add verifier
+    s.client.add_verifier(&candidate);
+    assert!(s.client.is_verifier(&candidate));
+}
+
+#[test]
+fn old_admin_cannot_remove_verifier_after_set_admin() {
+    let s = Setup::new();
+    let old_admin = s.admin.clone();
+    let new_admin = Address::generate(&s.env);
+    s.client.set_admin(&new_admin);
+
+    let verifier = Address::generate(&s.env);
+    s.client.add_verifier(&verifier);
+    assert!(s.client.is_verifier(&verifier));
+
+    let auth = MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "remove_verifier",
+            args: (verifier.clone(),).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+
+    let expected_auth_err = soroban_sdk::Error::from_type_and_code(
+        soroban_sdk::xdr::ScErrorType::Context,
+        soroban_sdk::xdr::ScErrorCode::InvalidAction,
+    );
+    let res = s.client.mock_auths(&[auth]).try_remove_verifier(&verifier);
+    let err = res.unwrap_err().unwrap();
+    assert_eq!(err, expected_auth_err);
+    assert!(s.client.is_verifier(&verifier));
+
+    // New admin can remove verifier
+    s.client.remove_verifier(&verifier);
+    assert!(!s.client.is_verifier(&verifier));
+}
+
+#[test]
+fn old_admin_cannot_set_bond_requirement_after_set_admin() {
+    let s = Setup::new();
+    let old_admin = s.admin.clone();
+    let new_admin = Address::generate(&s.env);
+    s.client.set_admin(&new_admin);
+
+    let auth = MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "set_bond_requirement",
+            args: (500i128,).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+
+    let res = s.client.mock_auths(&[auth]).try_set_bond_requirement(&500);
+    assert_eq!(res.unwrap_err(), Err(InvokeError::Abort));
+    assert_eq!(s.client.bond_requirement(), 0);
+
+    // New admin can set bond requirement
+    s.client.set_bond_requirement(&500);
+    assert_eq!(s.client.bond_requirement(), 500);
+}
+
+#[test]
+fn old_admin_cannot_set_bond_withdraw_delay_after_set_admin() {
+    let s = Setup::new();
+    let old_admin = s.admin.clone();
+    let new_admin = Address::generate(&s.env);
+    s.client.set_admin(&new_admin);
+
+    let auth = MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "set_bond_withdraw_delay",
+            args: (86400u64,).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+
+    let expected_auth_err = soroban_sdk::Error::from_type_and_code(
+        soroban_sdk::xdr::ScErrorType::Context,
+        soroban_sdk::xdr::ScErrorCode::InvalidAction,
+    );
+    let res = s
+        .client
+        .mock_auths(&[auth])
+        .try_set_bond_withdraw_delay(&86400);
+    let err = res.unwrap_err().unwrap();
+    assert_eq!(err, expected_auth_err);
+    assert_eq!(s.client.bond_withdraw_delay(), 0);
+
+    // New admin can set bond withdraw delay
+    s.client.set_bond_withdraw_delay(&86400);
+    assert_eq!(s.client.bond_withdraw_delay(), 86400);
+}
+
+#[test]
+fn old_admin_cannot_slash_verifier_after_set_admin() {
+    let s = Setup::new();
+    let old_admin = s.admin.clone();
+    let new_admin = Address::generate(&s.env);
+    s.client.set_admin(&new_admin);
+
+    let v = s.bonded_verifier(1_000, 400);
+    let id = s.campaign();
+
+    let auth = MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "slash_verifier",
+            args: (v.clone(), id, 150i128).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+
+    let res = s
+        .client
+        .mock_auths(&[auth])
+        .try_slash_verifier(&v, &id, &150);
+    assert_eq!(res.unwrap_err(), Err(InvokeError::Abort));
+    assert_eq!(s.client.get_verifier_bond(&v).unwrap().remaining, 400);
+
+    // New admin can slash verifier
+    s.client.slash_verifier(&v, &id, &150);
+    assert_eq!(s.client.get_verifier_bond(&v).unwrap().remaining, 250);
+    assert_eq!(s.client.get_campaign(&id).raised, 150);
+}
+
+#[test]
+fn old_admin_cannot_reassign_verifier_after_set_admin() {
+    let s = Setup::new();
+    let old_admin = s.admin.clone();
+    let new_admin = Address::generate(&s.env);
+    s.client.set_admin(&new_admin);
+
+    let id = s.campaign();
+    let new_v = Address::generate(&s.env);
+    s.client.add_verifier(&new_v);
+
+    let auth = MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "reassign_verifier",
+            args: (id, new_v.clone()).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+
+    let res = s
+        .client
+        .mock_auths(&[auth])
+        .try_reassign_verifier(&id, &new_v);
+    assert_eq!(res.unwrap_err(), Err(InvokeError::Abort));
+    assert_eq!(s.client.get_campaign(&id).verifier, s.verifier);
+
+    // New admin can reassign verifier
+    s.client.reassign_verifier(&id, &new_v);
+    assert_eq!(s.client.get_campaign(&id).verifier, new_v);
 }

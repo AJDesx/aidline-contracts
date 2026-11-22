@@ -19,6 +19,8 @@ pub enum CampaignStatus {
     Completed,
     /// Stopped early by the creator or admin. Donors can claim refunds.
     Cancelled,
+    /// Active campaign whose deadline has passed (computed).
+    Expired,
 }
 
 #[contracttype]
