@@ -2634,3 +2634,35 @@ fn remaining_to_goal_returns_campaign_not_found_for_unknown_id() {
     let res = s.client.try_remaining_to_goal(&99_999);
     assert_eq!(res, Err(Ok(Error::CampaignNotFound)));
 }
+
+#[test]
+fn next_milestone_returns_correct_milestone_across_approvals() {
+    let s = Setup::new();
+    let id = s.campaign(); // milestones: [300, 300, 400]
+    let donor = s.donor(1000);
+    s.client.donate(&donor, &id, &1000);
+
+    // After 0 approvals: next milestone is index 0 with amount 300
+    assert_eq!(s.client.next_milestone(&id), Some((0, 300)));
+
+    // After 1 approval: next milestone is index 1 with amount 300
+    s.client.approve_milestone(&id, &s.proof());
+    assert_eq!(s.client.next_milestone(&id), Some((1, 300)));
+
+    // After 2 approvals: next milestone is index 2 with amount 400
+    s.client.approve_milestone(&id, &s.proof());
+    assert_eq!(s.client.next_milestone(&id), Some((2, 400)));
+
+    // After all 3 approvals: campaign is completed, returns None
+    s.client.approve_milestone(&id, &s.proof());
+    let c = s.client.get_campaign(&id);
+    assert_eq!(c.status, CampaignStatus::Completed);
+    assert_eq!(s.client.next_milestone(&id), None);
+}
+
+#[test]
+fn next_milestone_returns_campaign_not_found_for_unknown_id() {
+    let s = Setup::new();
+    let res = s.client.try_next_milestone(&99_999);
+    assert_eq!(res, Err(Ok(Error::CampaignNotFound)));
+}

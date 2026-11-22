@@ -1538,6 +1538,21 @@ impl Aidline {
         Ok(remaining.max(0))
     }
 
+    /// Returns the next unreleased milestone index and its scheduled amount `(index, amount)`,
+    /// or `None` if all milestones have been released.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn next_milestone(env: Env, campaign_id: u64) -> Result<Option<(u32, i128)>, Error> {
+        let campaign = storage::campaign(&env, campaign_id)?;
+        let index = campaign.milestones_released;
+        if let Some(amount) = campaign.milestones.get(index) {
+            Ok(Some((index, amount)))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Extends the persistent storage TTL for `campaign_id`.
     ///
     /// Designed for long-running campaigns (e.g. climate projects) that may experience
