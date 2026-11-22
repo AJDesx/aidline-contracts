@@ -157,4 +157,7 @@ pub enum DataKey {
     AllowedToken(Address),
     // Emergency pause switch
     Paused,
+    // Platform fee and treasury
+    PlatformFee,
+    Treasury,
 }
