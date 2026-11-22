@@ -418,6 +418,100 @@ fn expired_campaign_allows_refund_and_blocks_activity() {
     assert_eq!(s.token.balance(&donor), 1000);
 }
 
+// ─── refund_for tests ────────────────────────────────────────────────────────
+
+#[test]
+fn refund_for_pays_donor_never_caller() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+    let relayer = Address::generate(&s.env);
+
+    s.client.donate(&donor, &id, &600);
+    s.client.cancel_campaign(&s.creator, &id);
+
+    // Initial relayer balance is 0
+    assert_eq!(s.token.balance(&relayer), 0);
+    assert_eq!(s.token.balance(&donor), 400);
+
+    // Relayer triggers refund on behalf of donor without donor authorization
+    let auth_relayer = MockAuth {
+        address: &relayer,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "refund_for",
+            args: (donor.clone(), id).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+    let refunded = s.client.mock_auths(&[auth_relayer]).refund_for(&donor, &id);
+    assert_eq!(refunded, 600);
+
+    // Tokens were paid to donor, NOT relayer
+    assert_eq!(s.token.balance(&donor), 1000);
+    assert_eq!(s.token.balance(&relayer), 0);
+}
+
+#[test]
+fn refund_for_prevents_double_refund() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+
+    s.client.donate(&donor, &id, &500);
+    s.client.cancel_campaign(&s.creator, &id);
+
+    // First refund succeeds
+    let refunded = s.client.refund_for(&donor, &id);
+    assert_eq!(refunded, 500);
+
+    // Second refund via refund_for fails with NothingToRefund
+    let second_res = s.client.try_refund_for(&donor, &id);
+    assert_eq!(second_res, Err(Ok(Error::NothingToRefund)));
+
+    // Second refund via refund fails with NothingToRefund
+    let direct_refund_res = s.client.try_refund(&donor, &id);
+    assert_eq!(direct_refund_res, Err(Ok(Error::NothingToRefund)));
+}
+
+#[test]
+fn refund_for_matches_refund_errors_on_non_refundable_campaign() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+
+    s.client.donate(&donor, &id, &300);
+
+    // Campaign is active and on schedule: RefundNotAvailable
+    let res_active = s.client.try_refund_for(&donor, &id);
+    assert_eq!(res_active, Err(Ok(Error::RefundNotAvailable)));
+
+    // Unknown campaign: CampaignNotFound
+    let res_not_found = s.client.try_refund_for(&donor, &999_999);
+    assert_eq!(res_not_found, Err(Ok(Error::CampaignNotFound)));
+
+    // Cancel campaign, but test non-contributor
+    s.client.cancel_campaign(&s.creator, &id);
+    let non_contributor = Address::generate(&s.env);
+    let res_nothing = s.client.try_refund_for(&non_contributor, &id);
+    assert_eq!(res_nothing, Err(Ok(Error::NothingToRefund)));
+}
+
+#[test]
+fn refund_for_requires_no_donor_auth() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+
+    s.client.donate(&donor, &id, &400);
+    s.client.cancel_campaign(&s.creator, &id);
+
+    // Invocation with empty mock_auths (no auth whatsoever provided)
+    let refunded = s.client.mock_auths(&[]).refund_for(&donor, &id);
+    assert_eq!(refunded, 400);
+    assert_eq!(s.token.balance(&donor), 1000);
+}
+
 #[test]
 fn is_refundable_covers_all_statuses() {
     let s = Setup::new();

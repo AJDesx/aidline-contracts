@@ -1554,18 +1554,38 @@ impl Aidline {
     /// - [`Error::NothingToRefund`]: `donor` has no recorded contribution.
     pub fn refund(env: Env, donor: Address, campaign_id: u64) -> Result<i128, Error> {
         donor.require_auth();
-        let mut campaign = storage::campaign(&env, campaign_id)?;
+        Self::execute_refund(&env, &donor, campaign_id)
+    }
 
-        let expired = Self::is_expired(&env, &campaign);
+    /// Triggers a refund on behalf of `donor` by any account.
+    ///
+    /// Tokens are always transferred to `donor`, never to the caller.
+    /// Requires no authorization from `donor`, enabling relayers, NGOs, or
+    /// keepers to push refunds to donors without donor transaction fees or interaction.
+    /// Emits [`Refunded`] and returns the amount transferred.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    /// - [`Error::RefundNotAvailable`]: campaign is still active, not expired,
+    ///   and no milestone is overdue.
+    /// - [`Error::NothingToRefund`]: `donor` has no recorded contribution.
+    pub fn refund_for(env: Env, donor: Address, campaign_id: u64) -> Result<i128, Error> {
+        Self::execute_refund(&env, &donor, campaign_id)
+    }
 
-        let is_overdue = Self::is_overdue(&env, &campaign);
+    fn execute_refund(env: &Env, donor: &Address, campaign_id: u64) -> Result<i128, Error> {
+        let mut campaign = storage::campaign(env, campaign_id)?;
+
+        let expired = Self::is_expired(env, &campaign);
+
+        let is_overdue = Self::is_overdue(env, &campaign);
         let ended = campaign.status == CampaignStatus::Cancelled || expired;
 
         if !ended && !is_overdue {
             return Err(Error::RefundNotAvailable);
         }
 
-        let contributed = storage::contribution(&env, campaign_id, &donor);
+        let contributed = storage::contribution(env, campaign_id, donor);
         if contributed == 0 {
             return Err(Error::NothingToRefund);
         }
@@ -1573,11 +1593,11 @@ impl Aidline {
         let unreleased = campaign.raised - campaign.released;
         let amount = contributed * unreleased / campaign.raised;
 
-        storage::set_contribution(&env, campaign_id, &donor, 0);
+        storage::set_contribution(env, campaign_id, donor, 0);
         if amount > 0 {
-            token::Client::new(&env, &campaign.token).transfer(
+            token::Client::new(env, &campaign.token).transfer(
                 &env.current_contract_address(),
-                &donor,
+                donor,
                 &amount,
             );
         }
@@ -1586,15 +1606,15 @@ impl Aidline {
             let released_portion = contributed - amount;
             campaign.raised -= contributed;
             campaign.released -= released_portion;
-            storage::save_campaign(&env, &campaign);
+            storage::save_campaign(env, &campaign);
         }
 
         Refunded {
             campaign_id,
-            donor,
+            donor: donor.clone(),
             amount,
         }
-        .publish(&env);
+        .publish(env);
         Ok(amount)
     }
 
