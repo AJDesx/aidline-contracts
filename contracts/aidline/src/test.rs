@@ -110,6 +110,39 @@ fn rejects_unknown_verifier() {
 }
 
 #[test]
+fn rejects_conflict_of_interest() {
+    let s = Setup::new();
+    let future = s.env.ledger().timestamp() + DAY;
+    let uri = String::from_str(&s.env, "ipfs://trees");
+
+    // Verifier is also creator
+    let res_creator = s.client.try_create_campaign(
+        &s.verifier,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Climate,
+        &uri,
+        &future,
+        &vec![&s.env, 100],
+    );
+    assert_eq!(res_creator, Err(Ok(Error::ConflictOfInterest)));
+
+    // Verifier is also beneficiary
+    let res_beneficiary = s.client.try_create_campaign(
+        &s.creator,
+        &s.verifier,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Climate,
+        &uri,
+        &future,
+        &vec![&s.env, 100],
+    );
+    assert_eq!(res_beneficiary, Err(Ok(Error::ConflictOfInterest)));
+}
+
+#[test]
 fn rejects_bad_milestones_and_deadline() {
     let s = Setup::new();
     let uri = String::from_str(&s.env, "ipfs://x");
@@ -150,6 +183,62 @@ fn rejects_bad_milestones_and_deadline() {
         &vec![&s.env, 100],
     );
     assert_eq!(past, Err(Ok(Error::DeadlineInPast)));
+}
+
+#[test]
+fn rejects_long_metadata_uri() {
+    let s = Setup::new();
+    let future = s.env.ledger().timestamp() + DAY;
+
+    // 257 bytes should fail with UriTooLong
+    let long_str = "a".repeat(257);
+    let long_uri = String::from_str(&s.env, &long_str);
+    let res = s.client.try_create_campaign(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Climate,
+        &long_uri,
+        &future,
+        &vec![&s.env, 100],
+    );
+    assert_eq!(res, Err(Ok(Error::UriTooLong)));
+
+    // Exact limit 256 bytes should succeed
+    let max_str = "a".repeat(256);
+    let max_uri = String::from_str(&s.env, &max_str);
+    let ok_res = s.client.try_create_campaign(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Climate,
+        &max_uri,
+        &future,
+        &vec![&s.env, 100],
+    );
+    assert!(ok_res.is_ok());
+}
+
+#[test]
+fn rejects_long_proof_uri() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+    s.client.donate(&donor, &id, &300);
+
+    // 257 bytes should fail with UriTooLong
+    let long_str = "p".repeat(257);
+    let long_proof = String::from_str(&s.env, &long_str);
+    let res = s.client.try_approve_milestone(&id, &long_proof);
+    assert_eq!(res, Err(Ok(Error::UriTooLong)));
+
+    // Exact limit 256 bytes should succeed
+    let max_str = "p".repeat(256);
+    let max_proof = String::from_str(&s.env, &max_str);
+    let ok_res = s.client.try_approve_milestone(&id, &max_proof);
+    assert_eq!(ok_res, Ok(Ok(300)));
 }
 
 #[test]
@@ -312,6 +401,71 @@ fn expired_campaign_allows_refund_and_blocks_activity() {
     );
     assert_eq!(s.client.refund(&donor, &id), 500);
     assert_eq!(s.token.balance(&donor), 1000);
+}
+
+#[test]
+fn is_refundable_covers_all_statuses() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    // 1. Active campaign within deadline is not refundable
+    assert!(!s.client.is_refundable(&id));
+
+    // 2. Cancelled campaign is refundable
+    let cancel_id = s.campaign();
+    s.client.cancel_campaign(&s.creator, &cancel_id);
+    assert_eq!(
+        s.client.get_campaign(&cancel_id).status,
+        CampaignStatus::Cancelled
+    );
+    assert!(s.client.is_refundable(&cancel_id));
+
+    // 3. Expired active campaign is refundable
+    let expired_id = s.campaign();
+    s.pass_deadline();
+    assert_eq!(
+        s.client.get_campaign(&expired_id).status,
+        CampaignStatus::Active
+    );
+    assert!(s.client.is_refundable(&expired_id));
+
+    // 4. Overdue milestone in active campaign is refundable
+    let s2 = Setup::new();
+    let now = s2.env.ledger().timestamp();
+    let due_dates = vec![&s2.env, now + 10 * DAY, now + 20 * DAY];
+    let milestones = vec![&s2.env, 300, 700];
+    let overdue_id = s2.client.create_campaign_with_due_dates(
+        &s2.creator,
+        &s2.beneficiary,
+        &s2.verifier,
+        &s2.token.address,
+        &CampaignKind::Climate,
+        &String::from_str(&s2.env, "ipfs://overdue"),
+        &(now + 30 * DAY),
+        &milestones,
+        &due_dates,
+    );
+    assert!(!s2.client.is_refundable(&overdue_id));
+    // Advance past milestone 0 due date but before campaign deadline
+    s2.env.ledger().set_timestamp(now + 11 * DAY);
+    assert!(s2.client.is_refundable(&overdue_id));
+
+    // 5. Completed campaign is not refundable
+    let s3 = Setup::new();
+    let completed_id = s3.campaign();
+    let donor = s3.donor(1000);
+    s3.client.donate(&donor, &completed_id, &1000);
+    s3.client.approve_milestone(&completed_id, &s3.proof()); // 300
+    s3.client.approve_milestone(&completed_id, &s3.proof()); // 300
+    s3.client.approve_milestone(&completed_id, &s3.proof()); // 400
+    assert_eq!(
+        s3.client.get_campaign(&completed_id).status,
+        CampaignStatus::Completed
+    );
+    assert!(!s3.client.is_refundable(&completed_id));
+
+    // 6. Non-existent campaign is not refundable
+    assert!(!s3.client.is_refundable(&999_999));
 }
 
 #[test]

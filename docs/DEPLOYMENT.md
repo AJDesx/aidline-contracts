@@ -57,6 +57,8 @@ Copy `AIDLINE_CONTRACT_ID` and `AIDLINE_TOKEN_ID` into the [backend](https://git
 
 ## Try it from the command line
 
+See [CLI.md](CLI.md) for complete copy-and-paste examples for every contract function.
+
 ```sh
 # Is an address a verifier?
 stellar contract invoke --id $AIDLINE_CONTRACT_ID --network testnet --source deployer \

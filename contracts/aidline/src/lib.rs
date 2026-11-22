@@ -34,6 +34,8 @@ use events::{
 };
 
 const MAX_MILESTONES: u32 = 20;
+/// Maximum length in bytes for metadata and proof URIs.
+const MAX_URI_LENGTH: u32 = 256;
 /// Maximum matching ratio (100 % = 10 000 bps).
 const MAX_RATIO_BPS: u32 = 10_000;
 /// Reason code emitted in PledgeSkipped when the donor has no allowance.
@@ -468,6 +470,9 @@ impl Aidline {
     /// Emits [`CampaignCreated`].
     ///
     /// # Errors
+    /// - [`Error::UriTooLong`]: `metadata_uri` exceeds [`MAX_URI_LENGTH`] bytes.
+    /// - [`Error::ConflictOfInterest`]: `verifier` is equal to `creator` or
+    ///   `beneficiary`.
     /// - [`Error::NotVerifier`]: `verifier` is not currently registered.
     /// - [`Error::TokenNotAllowed`]: `token` is not on the admin allowlist.
     /// - [`Error::DeadlineInPast`]: `deadline` is not after the current
@@ -529,6 +534,13 @@ impl Aidline {
     ) -> Result<u64, Error> {
         creator.require_auth();
         storage::bump_instance(&env);
+
+        if metadata_uri.len() > MAX_URI_LENGTH {
+            return Err(Error::UriTooLong);
+        }
+        if verifiers.contains(&creator) || verifiers.contains(&beneficiary) {
+            return Err(Error::ConflictOfInterest);
+        }
 
         if storage::is_paused(&env) {
             return Err(Error::Paused);
@@ -639,6 +651,7 @@ impl Aidline {
     /// donations have been received (`raised == 0`). Emits [`MetadataUpdated`].
     ///
     /// # Errors
+    /// - [`Error::UriTooLong`]: `new_metadata_uri` exceeds [`MAX_URI_LENGTH`] bytes.
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
     /// - [`Error::CampaignNotActive`]: campaign is not currently active.
     /// - [`Error::CampaignExpired`]: campaign deadline has passed.
@@ -651,6 +664,10 @@ impl Aidline {
         let mut campaign = storage::campaign(&env, campaign_id)?;
         campaign.creator.require_auth();
         Self::ensure_open(&env, &campaign)?;
+
+        if new_metadata_uri.len() > MAX_URI_LENGTH {
+            return Err(Error::UriTooLong);
+        }
 
         if campaign.raised > 0 {
             return Err(Error::DonationsAlreadyStarted);
@@ -1150,6 +1167,7 @@ impl Aidline {
     /// identify and authorize which verifier is signing.
     ///
     /// # Errors
+    /// - [`Error::UriTooLong`]: `proof_uri` exceeds [`MAX_URI_LENGTH`] bytes.
     /// - [`Error::Unauthorized`]: campaign has multiple verifiers requiring specific authorization.
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
     /// - [`Error::NotVerifier`]: the campaign's verifier is no longer registered.
@@ -1170,6 +1188,9 @@ impl Aidline {
         verifier: Address,
         proof_uri: String,
     ) -> Result<i128, Error> {
+        if proof_uri.len() > MAX_URI_LENGTH {
+            return Err(Error::UriTooLong);
+        }
         verifier.require_auth();
 
         if storage::is_paused(env) {
@@ -1428,6 +1449,24 @@ impl Aidline {
     /// Returns the total amount `donor` has contributed to `campaign_id`.
     pub fn contribution_of(env: Env, campaign_id: u64, donor: Address) -> i128 {
         storage::contribution(&env, campaign_id, &donor)
+    }
+
+    /// Returns `true` if donors can claim refunds for `campaign_id`.
+    ///
+    /// Mirrors the availability checks in [`refund`]: a campaign is refundable
+    /// if it has been cancelled, if it is active and past its deadline, or if
+    /// a milestone is overdue. Returns `false` if the campaign is active and on
+    /// schedule, completed, or does not exist.
+    pub fn is_refundable(env: Env, campaign_id: u64) -> bool {
+        let Ok(campaign) = storage::campaign(&env, campaign_id) else {
+            return false;
+        };
+        let expired = campaign.status == CampaignStatus::Active
+            && env.ledger().timestamp() > campaign.deadline;
+        let is_overdue = Self::is_overdue(&env, &campaign);
+        let ended = campaign.status == CampaignStatus::Cancelled || expired;
+
+        ended || is_overdue
     }
 
     /// Returns `true` if `who` is currently a registered verifier.
