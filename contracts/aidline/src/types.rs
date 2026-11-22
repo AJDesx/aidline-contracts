@@ -56,6 +56,8 @@ pub struct Campaign {
     pub threshold: u32,
     /// Whether the campaign deadline has already been extended (one-time only).
     pub deadline_extended: bool,
+    /// Optional minimum donation floor. Zero means no floor.
+    pub min_donation: i128,
 }
 
 /// A sponsor matching pool for a specific campaign.

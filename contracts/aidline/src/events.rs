@@ -10,13 +10,20 @@ pub struct CampaignCreated {
     pub kind: CampaignKind,
     pub goal: i128,
     pub deadline: u64,
+    pub min_donation: i128,
 }
 
 impl CampaignCreated {
     pub fn publish(&self, env: &Env) {
         env.events().publish(
             (symbol_short!("created"), self.campaign_id),
-            (self.creator.clone(), self.kind, self.goal, self.deadline),
+            (
+                self.creator.clone(),
+                self.kind,
+                self.goal,
+                self.deadline,
+                self.min_donation,
+            ),
         );
     }
 }
