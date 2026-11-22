@@ -1946,6 +1946,62 @@ fn test_view_refundable_amount() {
 }
 
 #[test]
+fn test_view_effective_status() {
+    let s = Setup::new();
+
+    // 1. Unknown campaign returns CampaignNotFound
+    assert_eq!(
+        s.client.try_effective_status(&999_999),
+        Err(Ok(Error::CampaignNotFound))
+    );
+
+    // 2. Active campaign within deadline -> Active
+    let id = s.campaign();
+    assert_eq!(s.client.effective_status(&id), CampaignStatus::Active);
+    assert_eq!(s.client.get_campaign(&id).status, CampaignStatus::Active);
+
+    // 3. Active campaign past deadline -> Expired
+    s.pass_deadline();
+    assert_eq!(s.client.effective_status(&id), CampaignStatus::Expired);
+    // Note: stored status remains Active as per ADR-0002
+    assert_eq!(s.client.get_campaign(&id).status, CampaignStatus::Active);
+
+    // 4. Cancelled campaign -> Cancelled (before and after deadline)
+    let s_cancel = Setup::new();
+    let cancel_id = s_cancel.campaign();
+    s_cancel
+        .client
+        .cancel_campaign(&s_cancel.creator, &cancel_id);
+    assert_eq!(
+        s_cancel.client.effective_status(&cancel_id),
+        CampaignStatus::Cancelled
+    );
+    s_cancel.pass_deadline();
+    assert_eq!(
+        s_cancel.client.effective_status(&cancel_id),
+        CampaignStatus::Cancelled
+    );
+
+    // 5. Completed campaign -> Completed (before and after deadline)
+    let s_comp = Setup::new();
+    let comp_id = s_comp.campaign();
+    let d = s_comp.donor(1000);
+    s_comp.client.donate(&d, &comp_id, &1000);
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    s_comp.client.approve_milestone(&comp_id, &s_comp.proof());
+    assert_eq!(
+        s_comp.client.effective_status(&comp_id),
+        CampaignStatus::Completed
+    );
+    s_comp.pass_deadline();
+    assert_eq!(
+        s_comp.client.effective_status(&comp_id),
+        CampaignStatus::Completed
+    );
+}
+
+#[test]
 fn test_view_is_verifier() {
     let s = Setup::new();
     let candidate = Address::generate(&s.env);
