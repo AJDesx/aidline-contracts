@@ -595,6 +595,7 @@ impl Aidline {
             deadline,
             milestones,
             0,
+            0,
         )
     }
 
@@ -633,6 +634,44 @@ impl Aidline {
             deadline,
             milestones,
             min_donation,
+            0,
+        )
+    }
+
+    /// Creates a new campaign with a minimum gap (cooldown) in seconds between milestone approvals.
+    ///
+    /// `approval_cooldown` defines the required time that must elapse between consecutive
+    /// milestone approvals. A cooldown of `0` imposes no delay between approvals.
+    ///
+    /// # Errors
+    /// All errors from [`create_campaign`].
+    pub fn create_campaign_with_cooldown(
+        env: Env,
+        creator: Address,
+        beneficiary: Address,
+        verifier: Address,
+        token: Address,
+        kind: CampaignKind,
+        metadata_uri: String,
+        deadline: u64,
+        milestones: Vec<i128>,
+        approval_cooldown: u64,
+    ) -> Result<u64, Error> {
+        let mut verifiers = Vec::new(&env);
+        verifiers.push_back(verifier.clone());
+        Self::create_multisig_campaign_inner(
+            env,
+            creator,
+            beneficiary,
+            verifiers,
+            1,
+            token,
+            kind,
+            metadata_uri,
+            deadline,
+            milestones,
+            0,
+            approval_cooldown,
         )
     }
 
@@ -673,6 +712,7 @@ impl Aidline {
             deadline,
             milestones,
             0,
+            0,
         )
     }
 
@@ -689,6 +729,7 @@ impl Aidline {
         deadline: u64,
         milestones: Vec<i128>,
         min_donation: i128,
+        approval_cooldown: u64,
     ) -> Result<u64, Error> {
         creator.require_auth();
         storage::bump_instance(&env);
@@ -763,6 +804,8 @@ impl Aidline {
             deadline_extended: false,
             min_donation,
             verifier_reassignments: 0,
+            approval_cooldown,
+            last_approval_time: 0,
         };
         storage::save_campaign(&env, &campaign);
 
@@ -1454,6 +1497,15 @@ impl Aidline {
             .get(index)
             .ok_or(Error::NoMilestonesLeft)?;
 
+        if campaign.approval_cooldown > 0 && campaign.last_approval_time > 0 {
+            let earliest_approval = campaign
+                .last_approval_time
+                .saturating_add(campaign.approval_cooldown);
+            if env.ledger().timestamp() < earliest_approval {
+                return Err(Error::ApprovalCooldownNotMet);
+            }
+        }
+
         let mut approvals = storage::milestone_approvals(env, campaign_id, index);
         if approvals.contains(&verifier) {
             return Err(Error::DuplicateApproval);
@@ -1534,6 +1586,7 @@ impl Aidline {
 
         campaign.released += remaining;
         campaign.milestones_released += 1;
+        campaign.last_approval_time = env.ledger().timestamp();
         if campaign.milestones_released == campaign.milestones.len() {
             campaign.status = CampaignStatus::Completed;
         }
@@ -1882,6 +1935,25 @@ impl Aidline {
         milestone_index: u32,
     ) -> Vec<Address> {
         storage::milestone_approvals(&env, campaign_id, milestone_index)
+    }
+
+    /// Returns the configured approval cooldown in seconds for `campaign_id`.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn approval_cooldown(env: Env, campaign_id: u64) -> Result<u64, Error> {
+        let campaign = storage::campaign(&env, campaign_id)?;
+        Ok(campaign.approval_cooldown)
+    }
+
+    /// Returns the ledger timestamp when the last milestone was approved/released,
+    /// or `0` if no milestone has been approved yet.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn last_approval_time(env: Env, campaign_id: u64) -> Result<u64, Error> {
+        let campaign = storage::campaign(&env, campaign_id)?;
+        Ok(campaign.last_approval_time)
     }
 
     /// Returns the current platform fee in basis points (default: 0).

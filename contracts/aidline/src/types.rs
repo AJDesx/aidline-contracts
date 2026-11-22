@@ -62,6 +62,10 @@ pub struct Campaign {
     pub min_donation: i128,
     /// Number of times this campaign's verifier has been reassigned.
     pub verifier_reassignments: u32,
+    /// Minimum gap (in seconds) between consecutive milestone approvals (0 = no cooldown).
+    pub approval_cooldown: u64,
+    /// Ledger timestamp of the last milestone approval/release (0 initially).
+    pub last_approval_time: u64,
 }
 
 /// A sponsor matching pool for a specific campaign.

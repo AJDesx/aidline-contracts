@@ -74,4 +74,7 @@ pub enum Error {
 
     // Verifier reassignment
     MaxVerifierReassignmentsExceeded = 40,
+
+    // Milestone approval cooldown
+    ApprovalCooldownNotMet = 41,
 }

@@ -84,6 +84,21 @@ impl<'a> Setup<'a> {
         )
     }
 
+    /// Campaign with three milestones of 300, 300 and 400 (goal 1000) and an approval cooldown.
+    fn campaign_with_cooldown(&self, cooldown: u64) -> u64 {
+        self.client.create_campaign_with_cooldown(
+            &self.creator,
+            &self.beneficiary,
+            &self.verifier,
+            &self.token.address,
+            &CampaignKind::Emergency,
+            &String::from_str(&self.env, "ipfs://flood-relief"),
+            &(self.env.ledger().timestamp() + 30 * DAY),
+            &vec![&self.env, 300, 300, 400],
+            &cooldown,
+        )
+    }
+
     fn proof(&self) -> String {
         String::from_str(&self.env, "ipfs://proof")
     }
@@ -3644,4 +3659,73 @@ fn completed_campaign_rejects_new_activity() {
         Err(Ok(Error::CampaignNotActive))
     );
     // Note: try_approve_milestone against a Completed campaign is already tested in milestones_release_in_order_and_complete.
+}
+
+#[test]
+fn approval_before_cooldown_gap_fails_with_error() {
+    let s = Setup::new();
+    let cooldown_secs = 3_600; // 1 hour
+    let id = s.campaign_with_cooldown(cooldown_secs);
+    let donor = s.donor(1_000);
+    s.client.donate(&donor, &id, &1_000);
+
+    // Initial last approval time should be 0
+    assert_eq!(s.client.last_approval_time(&id), 0);
+    assert_eq!(s.client.approval_cooldown(&id), cooldown_secs);
+
+    // First milestone approval succeeds immediately
+    let initial_time = s.env.ledger().timestamp();
+    let released = s.client.approve_milestone(&id, &s.proof());
+    assert_eq!(released, 300);
+
+    // Last approval time is stored and visible
+    assert_eq!(s.client.last_approval_time(&id), initial_time);
+    assert_eq!(s.client.get_campaign(&id).last_approval_time, initial_time);
+
+    // Immediate second milestone approval fails with ApprovalCooldownNotMet
+    let res = s.client.try_approve_milestone(&id, &s.proof());
+    assert_eq!(res, Err(Ok(Error::ApprovalCooldownNotMet)));
+
+    // Approval before cooldown gap has passed (after 1800s) still fails
+    s.env.ledger().set_timestamp(initial_time + 1_800);
+    let res_halfway = s.client.try_approve_milestone(&id, &s.proof());
+    assert_eq!(res_halfway, Err(Ok(Error::ApprovalCooldownNotMet)));
+
+    // Timestamp jump to exactly the cooldown time allows approval
+    s.env.ledger().set_timestamp(initial_time + cooldown_secs);
+    let released_second = s.client.approve_milestone(&id, &s.proof());
+    assert_eq!(released_second, 300);
+
+    // Last approval time updated
+    let second_time = initial_time + cooldown_secs;
+    assert_eq!(s.client.last_approval_time(&id), second_time);
+    assert_eq!(s.client.get_campaign(&id).last_approval_time, second_time);
+}
+
+#[test]
+fn approval_cooldown_of_zero_behaves_as_normal() {
+    let s = Setup::new();
+    let id = s.campaign_with_cooldown(0);
+    let donor = s.donor(1_000);
+    s.client.donate(&donor, &id, &1_000);
+
+    // Milestone 0 and 1 approved in the very same timestamp without error
+    let released_first = s.client.approve_milestone(&id, &s.proof());
+    assert_eq!(released_first, 300);
+
+    let released_second = s.client.approve_milestone(&id, &s.proof());
+    assert_eq!(released_second, 300);
+}
+
+#[test]
+fn approval_cooldown_and_last_approval_time_return_campaign_not_found() {
+    let s = Setup::new();
+    assert_eq!(
+        s.client.try_approval_cooldown(&999),
+        Err(Ok(Error::CampaignNotFound))
+    );
+    assert_eq!(
+        s.client.try_last_approval_time(&999),
+        Err(Ok(Error::CampaignNotFound))
+    );
 }
