@@ -3959,3 +3959,321 @@ fn donors_limit_above_cap_is_clamped() {
     let none_res = s.client.donors(&999, &0, &50);
     assert_eq!(none_res.len(), 0);
 }
+
+// ─── Property tests for sponsor matching math ─────────────────────────────────
+
+#[derive(Clone, Copy)]
+struct SimpleRng {
+    state: u64,
+}
+
+impl SimpleRng {
+    fn new(seed: u64) -> Self {
+        Self {
+            state: if seed == 0 { 0x853c49e6748fea9b } else { seed },
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9e3779b97f4a7c15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z ^ (z >> 31)
+    }
+
+    fn gen_range(&mut self, min: i128, max: i128) -> i128 {
+        if min >= max {
+            return min;
+        }
+        let range = (max - min + 1) as u128;
+        let val = (self.next_u64() as u128 | ((self.next_u64() as u128) << 64)) % range;
+        min + val as i128
+    }
+
+    fn gen_u32_range(&mut self, min: u32, max: u32) -> u32 {
+        if min >= max {
+            return min;
+        }
+        let range = (max - min + 1) as u64;
+        min + (self.next_u64() % range) as u32
+    }
+}
+
+/// Simulation helper mirroring the contract's matching math in `apply_matching` and `return_sponsor_pool`.
+struct MatchingSimState {
+    goal: i128,
+    raised: i128,
+    cap: i128,
+    deposited: i128,
+    remaining: i128,
+    matched: i128,
+    ratio_bps: u32,
+}
+
+impl MatchingSimState {
+    fn new(goal: i128, cap: i128, ratio_bps: u32) -> Self {
+        Self {
+            goal,
+            raised: 0,
+            cap,
+            deposited: cap,
+            remaining: cap,
+            matched: 0,
+            ratio_bps,
+        }
+    }
+
+    fn donate(&mut self, amount: i128) -> i128 {
+        if amount <= 0 || self.raised >= self.goal {
+            return 0;
+        }
+        let accepted = amount.min(self.goal - self.raised);
+        self.raised += accepted;
+        accepted
+    }
+
+    fn apply_match(&mut self, donation_amount: i128) -> i128 {
+        if donation_amount <= 0 {
+            return 0;
+        }
+        let raw_match = match donation_amount.checked_mul(self.ratio_bps as i128) {
+            Some(prod) => prod / 10_000,
+            None => return 0,
+        };
+        if raw_match <= 0 {
+            return 0;
+        }
+        let cap_remaining = self.cap - self.matched;
+        let pool_limit = self.remaining;
+        let campaign_headroom = self.goal - self.raised;
+
+        let matched_amount = raw_match
+            .min(cap_remaining)
+            .min(pool_limit)
+            .min(campaign_headroom);
+
+        if matched_amount <= 0 {
+            return 0;
+        }
+
+        self.remaining -= matched_amount;
+        self.matched += matched_amount;
+        self.raised += matched_amount;
+        matched_amount
+    }
+
+    fn return_pool(&mut self) -> i128 {
+        let return_amount = self.remaining;
+        self.remaining = 0;
+        return_amount
+    }
+}
+
+#[test]
+fn prop_matching_never_exceeds_pool_cap() {
+    let mut rng = SimpleRng::new(0x104_001);
+    const CASES: usize = 1200;
+
+    for case in 0..CASES {
+        let ratio = match case {
+            0 => 1,
+            1 => 10_000,
+            2..=100 => 1,
+            101..=200 => 10_000,
+            _ => rng.gen_u32_range(1, 10_000),
+        };
+        let cap = rng.gen_range(1, 1_000_000);
+        let goal = rng.gen_range(cap / 2 + 1, cap * 5 + 10);
+        let mut sim = MatchingSimState::new(goal, cap, ratio);
+
+        let steps = rng.gen_range(1, 15);
+        for _ in 0..steps {
+            let donation = match rng.gen_range(0, 3) {
+                0 => rng.gen_range(1, 10),
+                1 => rng.gen_range(goal / 2, goal + 100),
+                _ => rng.gen_range(1, goal * 2),
+            };
+            sim.donate(donation);
+            sim.apply_match(donation);
+            assert!(
+                sim.matched <= sim.cap,
+                "Case {case}: matched {} exceeded cap {}",
+                sim.matched,
+                sim.cap
+            );
+        }
+    }
+}
+
+#[test]
+fn prop_matching_never_passes_goal() {
+    let mut rng = SimpleRng::new(0x104_002);
+    const CASES: usize = 1200;
+
+    for case in 0..CASES {
+        let ratio = match case {
+            0 => 1,
+            1 => 10_000,
+            2..=100 => 1,
+            101..=200 => 10_000,
+            _ => rng.gen_u32_range(1, 10_000),
+        };
+        let goal = rng.gen_range(100, 1_000_000);
+        let cap = rng.gen_range(goal / 2, goal * 2);
+        let mut sim = MatchingSimState::new(goal, cap, ratio);
+
+        // Intentionally test amounts near the goal (e.g. raised within 1..10 of goal)
+        let near_goal_donation = goal - rng.gen_range(1, 10);
+        sim.donate(near_goal_donation);
+        assert!(sim.raised <= sim.goal);
+
+        let steps = rng.gen_range(1, 10);
+        for _ in 0..steps {
+            let donation = rng.gen_range(1, goal);
+            sim.donate(donation);
+            sim.apply_match(donation);
+            assert!(
+                sim.raised <= sim.goal,
+                "Case {case}: raised {} passed goal {}",
+                sim.raised,
+                sim.goal
+            );
+        }
+    }
+}
+
+#[test]
+fn prop_matching_deposited_equals_remaining_plus_matched() {
+    let mut rng = SimpleRng::new(0x104_003);
+    const CASES: usize = 1200;
+
+    for case in 0..CASES {
+        let ratio = match case {
+            0 => 1,
+            1 => 10_000,
+            2..=100 => 1,
+            101..=200 => 10_000,
+            _ => rng.gen_u32_range(1, 10_000),
+        };
+        let cap = rng.gen_range(1, 2_000_000);
+        let goal = rng.gen_range(10, cap * 3);
+        let mut sim = MatchingSimState::new(goal, cap, ratio);
+
+        let steps = rng.gen_range(1, 20);
+        for _ in 0..steps {
+            let donation = rng.gen_range(1, goal + 100);
+            sim.donate(donation);
+            sim.apply_match(donation);
+            assert_eq!(
+                sim.deposited,
+                sim.remaining + sim.matched,
+                "Case {case}: deposited {} != remaining {} + matched {}",
+                sim.deposited,
+                sim.remaining,
+                sim.matched
+            );
+        }
+    }
+}
+
+#[test]
+fn prop_matching_returns_pay_back_exactly_remaining() {
+    let mut rng = SimpleRng::new(0x104_004);
+    const CASES: usize = 1200;
+
+    for case in 0..CASES {
+        let ratio = match case {
+            0 => 1,
+            1 => 10_000,
+            2..=100 => 1,
+            101..=200 => 10_000,
+            _ => rng.gen_u32_range(1, 10_000),
+        };
+        let cap = rng.gen_range(1, 1_000_000);
+        let goal = rng.gen_range(10, cap * 2);
+        let mut sim = MatchingSimState::new(goal, cap, ratio);
+
+        let steps = rng.gen_range(0, 10);
+        for _ in 0..steps {
+            let donation = rng.gen_range(1, goal);
+            sim.donate(donation);
+            sim.apply_match(donation);
+        }
+
+        let expected_return = sim.remaining;
+        let returned = sim.return_pool();
+        assert_eq!(
+            returned, expected_return,
+            "Case {case}: returned {} != expected remaining {}",
+            returned, expected_return
+        );
+        assert_eq!(sim.remaining, 0);
+    }
+}
+
+#[test]
+fn test_sponsor_matching_properties_contract_integration() {
+    // End-to-end integration test on the Soroban contract verifying the four invariants:
+    // 1. matched never exceeds cap
+    // 2. never passes the goal
+    // 3. deposited == remaining + matched
+    // 4. return pays back exactly remaining
+    let s = Setup::new();
+    let sponsor = s.donor(1_000_000);
+    let donor = s.donor(1_000_000);
+
+    // Test ratio 1, ratio 10_000, and amount near the goal
+    for &(ratio, cap, goal, near_goal_gap) in &[
+        (1u32, 500i128, 1_000i128, 5i128),
+        (10_000u32, 500i128, 1_000i128, 50i128),
+        (5_000u32, 200i128, 1_000i128, 2i128),
+    ] {
+        let id = s.client.create_campaign(
+            &s.creator,
+            &s.beneficiary,
+            &s.verifier,
+            &s.token.address,
+            &CampaignKind::Emergency,
+            &String::from_str(&s.env, "ipfs://prop-contract-test"),
+            &(s.env.ledger().timestamp() + 30 * DAY),
+            &vec![&s.env, goal],
+        );
+
+        s.client
+            .deposit_sponsor_pool(&sponsor, &id, &ratio, &cap, &cap);
+        let initial_pool = s.client.get_sponsor_pool(&id, &sponsor).unwrap();
+        assert_eq!(initial_pool.deposited, cap);
+        assert_eq!(initial_pool.remaining, cap);
+        assert_eq!(initial_pool.matched, 0);
+
+        // Bring campaign close to goal
+        let initial_donation = goal - near_goal_gap;
+        s.client.donate(&donor, &id, &initial_donation);
+
+        // Apply matching
+        s.client
+            .apply_matching(&sponsor, &id, &donor, &initial_donation);
+
+        let pool = s.client.get_sponsor_pool(&id, &sponsor).unwrap();
+        let campaign = s.client.get_campaign(&id);
+
+        // Invariant 1: matched never exceeds cap
+        assert!(pool.matched <= pool.cap);
+        // Invariant 2: never passes the goal
+        assert!(campaign.raised <= campaign.goal);
+        // Invariant 3: deposited == remaining + matched
+        assert_eq!(pool.deposited, pool.remaining + pool.matched);
+
+        // Invariant 4: return pays back exactly remaining
+        s.pass_deadline();
+        let sponsor_bal_before = s.token.balance(&sponsor);
+        let expected_remaining = pool.remaining;
+        let returned = s.client.return_sponsor_pool(&sponsor, &id);
+        assert_eq!(returned, expected_remaining);
+        assert_eq!(
+            s.token.balance(&sponsor),
+            sponsor_bal_before + expected_remaining
+        );
+    }
+}
