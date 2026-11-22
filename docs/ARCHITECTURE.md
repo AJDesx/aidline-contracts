@@ -13,7 +13,7 @@ This document explains how the Aidline contract is put together and why. If you 
 
 | Role | Powers |
 | --- | --- |
-| Admin | Adds and removes verifiers, can cancel any campaign, can hand admin to another address, can slash verifier bonds |
+| Admin | Adds and removes verifiers, can cancel any campaign, can hand admin to another address, can slash verifier bonds, can pause/unpause for emergencies, can upgrade contract code |
 | Creator | Opens campaigns, can cancel their own campaign |
 | Beneficiary | Receives milestone payouts. Often the same as the creator, but can be a separate NGO wallet |
 | Verifier | Approves milestones for campaigns assigned to them, while registered by the admin. Must post a bond to register. |
@@ -54,6 +54,37 @@ This provides critical funds in the first hours of a disaster without waiting fo
 - **Accounting:** The advance is recorded against milestone one (`milestones[0]`). When the verifier later formally approves milestone one, the contract only transfers the remaining balance (if any) of that milestone to the beneficiary. The total funds released for milestone one never exceed its scheduled amount.
 - **Security:** Only the registered verifier can trigger the fast track. It is only available for `Emergency` campaigns, and only once per campaign.
 
+## Emergency Pause Switch
+
+In case an exploit or critical bug is discovered, the admin can pause state-mutating operations using `pause` and resume them using `unpause`.
+
+- **Blocked functions:** While paused, `donate`, `approve_milestone` (including multisig approvals), `emergency_fast_track`, and `create_campaign` (including multisig and due dates creation) reject immediately with `Error::Paused`.
+- **Refunds always allowed:** `refund` is never blocked by the pause switch. Donors can always withdraw unreleased funds if a campaign has been cancelled, expired, or had an overdue milestone.
+- **View functions:** View functions (`get_campaign`, `is_paused`, etc.) remain accessible at all times.
+- **Events:** `paused` and `unpaused` are emitted with the acting admin address.
+
+## Contract Upgrades
+
+Aidline provides an admin-controlled upgrade path via `upgrade(new_wasm_hash)` so that bugs can be fixed or features added without abandoning existing campaign history and escrow balances.
+
+### Upgrade Procedure
+
+1. **Build and Validate**: Compile and test the new contract code locally (`cargo test`, `stellar contract build`).
+2. **Optional Pause**: For high-risk upgrades, the admin may call `pause()` to freeze donations and milestone payouts while preserving refunds.
+3. **Install Bytecode**: Install the new Wasm binary onto the network using the Stellar CLI:
+   ```sh
+   stellar contract install --wasm target/wasm32v1-none/release/aidline.wasm --source admin
+   ```
+   This stores the bytecode on-chain and outputs its 32-byte Wasm hash (`new_wasm_hash`).
+4. **Trigger Upgrade**: The admin calls `upgrade(new_wasm_hash)` on the contract. The contract verifies admin authorization, updates the contract executable via `update_current_contract`, and emits the `upgraded` event.
+5. **Post-Upgrade Verification**: Verify that existing campaign state and storage remain intact, then call `unpause()` if the contract was paused.
+
+### Trust Implications and Security
+
+- **Centralized Control**: The upgrade path gives the admin address the authority to replace contract logic. Donors and beneficiaries must trust the admin not to deploy malicious or compromised bytecode.
+- **State Preservation**: In Soroban, updating the contract executable preserves all instance and persistent storage entries (campaigns, contributions, bonds, pledges). New contract versions must remain schema-compatible with existing storage keys.
+- **Mitigation**: In production deployments, admin control should be transferred to a multisig account, a timelock contract, or a DAO to mitigate single-key compromise risks.
+
 ## Storage
 
 | Key | Storage type | Value |
@@ -71,6 +102,7 @@ This provides critical funds in the first hours of a disaster without waiting fo
 | `PledgeCount` | instance | `u64` next pledge id (Issue #30) |
 | `Pledge(u64)` | persistent | `Pledge` struct (Issue #30) |
 | `MilestoneApprovals(u64, u32)` | persistent | `Vec<Address>` approved verifiers for milestone |
+| `Paused` | instance | `bool`, true when contract is paused in emergencies |
 
 TTLs are extended on every read and write (instance: 30 days, persistent: 120 days). For long-running campaigns (such as multi-year climate projects) that may remain quiet for months, anyone (such as an off-chain keeper or backend worker) can call the public `extend_campaign_ttl(campaign_id)` entry point without authorization to bump the persistent entry TTL by another 120 days and prevent expiration.
 
@@ -111,6 +143,11 @@ Sponsors are also included in the refund pool (their `Contribution` entry tracks
 | `pledge_settlement` | `campaign_id` | `milestone_index`, `total_pledged_pulled` |
 | `verifier_reassigned` | `campaign_id` | `old_verifier`, `new_verifier` |
 | `approved` | `campaign_id`, `milestone_index` | `verifier`, `approvals_count`, `threshold` |
+| `paused` | `admin` | none |
+| `unpaused` | `admin` | none |
+| `upgraded` | none | `new_wasm_hash` |
+| `meta_upd` | `campaign_id` | `new_metadata_uri` |
+| `dl_ext` | `campaign_id` | `old_deadline`, `new_deadline` |
 
 The backend indexer reads these to build campaign pages, donor histories and impact reports without scanning contract storage.
 
@@ -125,6 +162,8 @@ The backend indexer reads these to build campaign pages, donor histories and imp
 **One token per deployment.** Multi asset support is a planned improvement.
 
 **Removing a verifier freezes their campaigns.** Funds are not lost: the creator or admin can cancel, which opens refunds. The admin can also reassign the verifier on an active campaign using `reassign_verifier`.
+
+**Creators can extend deadlines once.** To accommodate unexpected field work delays without prematurely triggering refund windows, campaign creators can extend their deadline once by at most 30 days while the campaign is active.
 
 ---
 

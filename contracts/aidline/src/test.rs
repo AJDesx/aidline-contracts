@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use soroban_sdk::{
-    Address, Env, String,
+    Address, Env, String, contract, contractimpl,
     testutils::{Address as _, Events as _, Ledger},
     token::{StellarAssetClient, TokenClient},
     vec,
@@ -1927,4 +1927,311 @@ proptest! {
             prop_assert_eq!(contract_balance, total_raised - total_released);
         }
     }
+}
+
+// ─── Emergency pause switch tests ────────────────────────────────────────────
+
+#[test]
+fn admin_can_pause_and_unpause() {
+    let s = Setup::new();
+    assert!(!s.client.is_paused());
+
+    s.client.pause();
+    assert!(s.client.is_paused());
+
+    s.client.unpause();
+    assert!(!s.client.is_paused());
+}
+
+#[test]
+fn pause_blocks_create_campaign_donate_and_approve_milestone() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(500);
+
+    // Initial donation works
+    let accepted = s.client.donate(&donor, &id, &300);
+    assert_eq!(accepted, 300);
+
+    // Pause contract
+    s.client.pause();
+
+    // Create campaign blocked
+    let res_create = s.client.try_create_campaign(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Climate,
+        &String::from_str(&s.env, "ipfs://new-campaign"),
+        &(s.env.ledger().timestamp() + 30 * DAY),
+        &vec![&s.env, 100],
+    );
+    assert_eq!(res_create, Err(Ok(Error::Paused)));
+
+    // Create campaign with due dates blocked
+    let res_create_dates = s.client.try_create_campaign_with_due_dates(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Climate,
+        &String::from_str(&s.env, "ipfs://new-dates"),
+        &(s.env.ledger().timestamp() + 30 * DAY),
+        &vec![&s.env, 100],
+        &vec![&s.env, s.env.ledger().timestamp() + 10 * DAY],
+    );
+    assert_eq!(res_create_dates, Err(Ok(Error::Paused)));
+
+    // Donate blocked
+    let res_donate = s.client.try_donate(&donor, &id, &100);
+    assert_eq!(res_donate, Err(Ok(Error::Paused)));
+
+    // Approve milestone blocked
+    let res_approve = s.client.try_approve_milestone(&id, &s.proof());
+    assert_eq!(res_approve, Err(Ok(Error::Paused)));
+
+    // Emergency fast track blocked
+    let res_fast_track = s.client.try_emergency_fast_track(&id);
+    assert_eq!(res_fast_track, Err(Ok(Error::Paused)));
+
+    // Unpause restores functionality
+    s.client.unpause();
+
+    let accepted2 = s.client.donate(&donor, &id, &100);
+    assert_eq!(accepted2, 100);
+
+    let released = s.client.approve_milestone(&id, &s.proof());
+    assert_eq!(released, 300);
+}
+
+#[test]
+fn refunds_work_while_paused() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(500);
+    s.client.donate(&donor, &id, &300);
+
+    s.client.cancel_campaign(&s.creator, &id);
+
+    // Pause contract
+    s.client.pause();
+
+    // Refund succeeds while paused
+    let refunded = s.client.refund(&donor, &id);
+    assert_eq!(refunded, 300);
+    assert_eq!(s.token.balance(&donor), 500);
+}
+
+// ─── Upgrade tests ────────────────────────────────────────────────────────────
+
+#[contract]
+pub struct MockUpgradedAidline;
+
+#[contractimpl]
+impl MockUpgradedAidline {
+    pub fn version() -> u32 {
+        2
+    }
+
+    pub fn get_campaign(env: Env, campaign_id: u64) -> crate::Campaign {
+        crate::storage::campaign(&env, campaign_id).unwrap()
+    }
+}
+
+#[test]
+fn admin_can_upgrade_contract_and_preserves_state() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(500);
+    s.client.donate(&donor, &id, &300);
+
+    // Upload the new contract code
+    let new_wasm_hash = s.env.upload(MockUpgradedAidline);
+
+    // Admin upgrades the contract
+    s.client.upgrade(&new_wasm_hash);
+
+    // Verify upgrade took effect at the same contract address
+    let upgraded_client = MockUpgradedAidlineClient::new(&s.env, &s.client.address);
+    assert_eq!(upgraded_client.version(), 2);
+
+    // State (campaign) is preserved across upgrade
+    let c = upgraded_client.get_campaign(&id);
+    assert_eq!(c.id, id);
+    assert_eq!(c.goal, 1000);
+    assert_eq!(c.raised, 300);
+}
+
+#[test]
+fn non_admin_cannot_upgrade_contract() {
+    let s = Setup::new();
+    let new_wasm_hash = s.env.upload(MockUpgradedAidline);
+
+    let res = s.client.mock_auths(&[]).try_upgrade(&new_wasm_hash);
+    assert!(res.is_err());
+}
+
+// ─── Metadata update tests ───────────────────────────────────────────────────
+
+#[test]
+fn creator_can_update_metadata_before_donations() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    let initial = s.client.get_campaign(&id);
+    assert_eq!(
+        initial.metadata_uri,
+        String::from_str(&s.env, "ipfs://flood-relief")
+    );
+
+    let new_uri = String::from_str(&s.env, "ipfs://flood-relief-corrected-story");
+    s.client.update_metadata(&id, &new_uri);
+
+    let updated = s.client.get_campaign(&id);
+    assert_eq!(updated.metadata_uri, new_uri);
+}
+
+#[test]
+fn metadata_update_fails_after_first_donation() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(500);
+
+    // First donation
+    s.client.donate(&donor, &id, &100);
+
+    let new_uri = String::from_str(&s.env, "ipfs://too-late-story");
+    let res = s.client.try_update_metadata(&id, &new_uri);
+    assert_eq!(res, Err(Ok(Error::DonationsAlreadyStarted)));
+}
+
+#[test]
+fn metadata_update_requires_creator_auth() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let new_uri = String::from_str(&s.env, "ipfs://new-story");
+
+    // Call without creator authorization
+    let res = s.client.mock_auths(&[]).try_update_metadata(&id, &new_uri);
+    assert!(res.is_err());
+}
+
+#[test]
+fn metadata_update_fails_for_expired_or_nonexistent_campaign() {
+    let s = Setup::new();
+    let uri = String::from_str(&s.env, "ipfs://test");
+
+    // Nonexistent
+    assert_eq!(
+        s.client.try_update_metadata(&999, &uri),
+        Err(Ok(Error::CampaignNotFound))
+    );
+
+    // Expired
+    let id = s.campaign();
+    s.pass_deadline();
+    assert_eq!(
+        s.client.try_update_metadata(&id, &uri),
+        Err(Ok(Error::CampaignExpired))
+    );
+}
+
+// ─── Deadline extension tests ────────────────────────────────────────────────
+
+#[test]
+fn creator_can_extend_deadline_once() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    let initial = s.client.get_campaign(&id);
+    let original_deadline = initial.deadline;
+    assert!(!initial.deadline_extended);
+
+    let new_deadline = original_deadline + 15 * DAY;
+    s.client.extend_deadline(&id, &new_deadline);
+
+    let updated = s.client.get_campaign(&id);
+    assert_eq!(updated.deadline, new_deadline);
+    assert!(updated.deadline_extended);
+}
+
+#[test]
+fn second_deadline_extension_is_rejected() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let original_deadline = s.client.get_campaign(&id).deadline;
+
+    // First extension succeeds
+    s.client
+        .extend_deadline(&id, &(original_deadline + 10 * DAY));
+
+    // Second extension fails
+    let res = s
+        .client
+        .try_extend_deadline(&id, &(original_deadline + 20 * DAY));
+    assert_eq!(res, Err(Ok(Error::DeadlineAlreadyExtended)));
+}
+
+#[test]
+fn deadline_extension_rules_enforced() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let original_deadline = s.client.get_campaign(&id).deadline;
+
+    // Extension > 30 days rejected
+    let res_too_long = s
+        .client
+        .try_extend_deadline(&id, &(original_deadline + 31 * DAY));
+    assert_eq!(res_too_long, Err(Ok(Error::InvalidDeadlineExtension)));
+
+    // Extension <= current deadline rejected
+    let res_past = s.client.try_extend_deadline(&id, &original_deadline);
+    assert_eq!(res_past, Err(Ok(Error::InvalidDeadlineExtension)));
+
+    let res_earlier = s
+        .client
+        .try_extend_deadline(&id, &(original_deadline - DAY));
+    assert_eq!(res_earlier, Err(Ok(Error::InvalidDeadlineExtension)));
+}
+
+#[test]
+fn deadline_extension_fails_after_deadline_expired() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let original_deadline = s.client.get_campaign(&id).deadline;
+
+    s.pass_deadline();
+
+    let res = s
+        .client
+        .try_extend_deadline(&id, &(original_deadline + 10 * DAY));
+    assert_eq!(res, Err(Ok(Error::CampaignExpired)));
+}
+
+#[test]
+fn deadline_extension_fails_on_cancelled_campaign() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let original_deadline = s.client.get_campaign(&id).deadline;
+
+    s.client.cancel_campaign(&s.creator, &id);
+
+    let res = s
+        .client
+        .try_extend_deadline(&id, &(original_deadline + 10 * DAY));
+    assert_eq!(res, Err(Ok(Error::CampaignNotActive)));
+}
+
+#[test]
+fn deadline_extension_requires_creator_auth() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let original_deadline = s.client.get_campaign(&id).deadline;
+
+    let res = s
+        .client
+        .mock_auths(&[])
+        .try_extend_deadline(&id, &(original_deadline + 10 * DAY));
+    assert!(res.is_err());
 }

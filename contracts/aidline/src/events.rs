@@ -1,6 +1,6 @@
 #![allow(deprecated)]
 
-use soroban_sdk::{Address, Env, String, symbol_short};
+use soroban_sdk::{Address, BytesN, Env, String, symbol_short};
 
 use crate::types::CampaignKind;
 
@@ -411,6 +411,76 @@ impl TokenAllowlistUpdated {
         env.events().publish(
             (symbol_short!("tok_allow"), self.token.clone()),
             self.allowed,
+        );
+    }
+}
+
+// ─── Emergency pause events ──────────────────────────────────────────────────
+
+pub struct ContractPaused {
+    pub admin: Address,
+}
+
+impl ContractPaused {
+    pub fn publish(&self, env: &Env) {
+        env.events()
+            .publish((symbol_short!("paused"), self.admin.clone()), ());
+    }
+}
+
+pub struct ContractUnpaused {
+    pub admin: Address,
+}
+
+impl ContractUnpaused {
+    pub fn publish(&self, env: &Env) {
+        env.events()
+            .publish((symbol_short!("unpaused"), self.admin.clone()), ());
+    }
+}
+
+// ─── Upgrade event ───────────────────────────────────────────────────────────
+
+pub struct ContractUpgraded {
+    pub new_wasm_hash: BytesN<32>,
+}
+
+impl ContractUpgraded {
+    pub fn publish(&self, env: &Env) {
+        env.events()
+            .publish((symbol_short!("upgraded"),), self.new_wasm_hash.clone());
+    }
+}
+
+// ─── Metadata update event ───────────────────────────────────────────────────
+
+pub struct MetadataUpdated {
+    pub campaign_id: u64,
+    pub new_metadata_uri: String,
+}
+
+impl MetadataUpdated {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("meta_upd"), self.campaign_id),
+            self.new_metadata_uri.clone(),
+        );
+    }
+}
+
+// ─── Deadline extension event ────────────────────────────────────────────────
+
+pub struct DeadlineExtended {
+    pub campaign_id: u64,
+    pub old_deadline: u64,
+    pub new_deadline: u64,
+}
+
+impl DeadlineExtended {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("dl_ext"), self.campaign_id),
+            (self.old_deadline, self.new_deadline),
         );
     }
 }

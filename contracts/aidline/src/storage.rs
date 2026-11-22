@@ -269,3 +269,16 @@ pub fn set_token_allowed(env: &Env, token: &Address, allowed: bool) {
         env.storage().persistent().remove(&key);
     }
 }
+
+// ─── Emergency pause switch ──────────────────────────────────────────────────
+
+pub fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+pub fn set_paused(env: &Env, paused: bool) {
+    env.storage().instance().set(&DataKey::Paused, &paused);
+}

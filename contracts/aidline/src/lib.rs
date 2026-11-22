@@ -15,7 +15,9 @@ mod types;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{Address, Env, String, Vec, contract, contractimpl, token};
+use soroban_sdk::{
+    Address, BytesN, ContractExecutable, Env, String, Vec, contract, contractimpl, token,
+};
 
 pub use errors::Error;
 pub use types::{
@@ -23,8 +25,9 @@ pub use types::{
 };
 
 use events::{
-    AdminChanged, BondSlashed, BondWithdrawn, CampaignCancelled, CampaignCreated, Donated,
-    EmergencyAdvanceReleased, MatchingApplied, MilestoneApproved, MilestoneReleased, PledgeCreated,
+    AdminChanged, BondSlashed, BondWithdrawn, CampaignCancelled, CampaignCreated, ContractPaused,
+    ContractUnpaused, ContractUpgraded, DeadlineExtended, Donated, EmergencyAdvanceReleased,
+    MatchingApplied, MetadataUpdated, MilestoneApproved, MilestoneReleased, PledgeCreated,
     PledgePulled, PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited,
     SponsorPoolReturned, TokenAllowlistUpdated, VerifierBondPosted, VerifierDeregistered,
     VerifierReassigned, VerifierUpdated,
@@ -37,6 +40,9 @@ const MAX_RATIO_BPS: u32 = 10_000;
 const SKIP_REASON_NO_ALLOWANCE: u32 = 1;
 /// Reason code emitted in PledgeSkipped when the pledge is fully consumed.
 const SKIP_REASON_EXHAUSTED: u32 = 2;
+
+/// Maximum duration (in seconds) for a one-time deadline extension (30 days).
+const MAX_DEADLINE_EXTENSION: u64 = 30 * 86_400;
 
 /// The emergency advance is capped at 20% of the campaign goal (200 bps out of
 /// 1000, or equivalently goal / 5).  Integer arithmetic: advance = goal / 5
@@ -119,6 +125,49 @@ impl Aidline {
             new: new_admin,
         }
         .publish(&env);
+    }
+
+    /// Pauses the contract in emergencies.
+    ///
+    /// Only the admin may call this. While paused, `donate`, `approve_milestone`,
+    /// `create_campaign`, and `emergency_fast_track` fail with [`Error::Paused`].
+    /// Refunds keep working so donors are never locked in. Emits [`ContractPaused`].
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the admin.
+    pub fn pause(env: Env) {
+        let admin = storage::admin(&env);
+        admin.require_auth();
+        storage::set_paused(&env, true);
+        ContractPaused { admin }.publish(&env);
+    }
+
+    /// Unpauses the contract, restoring normal operation.
+    ///
+    /// Only the admin may call this. Emits [`ContractUnpaused`].
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the admin.
+    pub fn unpause(env: Env) {
+        let admin = storage::admin(&env);
+        admin.require_auth();
+        storage::set_paused(&env, false);
+        ContractUnpaused { admin }.publish(&env);
+    }
+
+    /// Upgrades the contract's Wasm executable to `new_wasm_hash`.
+    ///
+    /// Only the current admin may call this. The new Wasm code must already
+    /// be installed on-chain. Emits [`ContractUpgraded`].
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the admin.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        let admin = storage::admin(&env);
+        admin.require_auth();
+        env.deployer()
+            .update_current_contract(ContractExecutable::Wasm(new_wasm_hash.clone()));
+        ContractUpgraded { new_wasm_hash }.publish(&env);
     }
 
     // ─── Token Allowlist (admin only) ─────────────────────────────────────────
@@ -481,6 +530,10 @@ impl Aidline {
         creator.require_auth();
         storage::bump_instance(&env);
 
+        if storage::is_paused(&env) {
+            return Err(Error::Paused);
+        }
+
         if !storage::is_token_allowed(&env, &token) {
             return Err(Error::TokenNotAllowed);
         }
@@ -534,6 +587,7 @@ impl Aidline {
             emergency_advance: 0,
             verifiers,
             threshold,
+            deadline_extended: false,
         };
         storage::save_campaign(&env, &campaign);
 
@@ -579,6 +633,86 @@ impl Aidline {
         Ok(id)
     }
 
+    /// Updates the off-chain metadata URI for `campaign_id`.
+    ///
+    /// Only the campaign's creator may call this, and only before any
+    /// donations have been received (`raised == 0`). Emits [`MetadataUpdated`].
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    /// - [`Error::CampaignNotActive`]: campaign is not currently active.
+    /// - [`Error::CampaignExpired`]: campaign deadline has passed.
+    /// - [`Error::DonationsAlreadyStarted`]: campaign has already received donations.
+    pub fn update_metadata(
+        env: Env,
+        campaign_id: u64,
+        new_metadata_uri: String,
+    ) -> Result<(), Error> {
+        let mut campaign = storage::campaign(&env, campaign_id)?;
+        campaign.creator.require_auth();
+        Self::ensure_open(&env, &campaign)?;
+
+        if campaign.raised > 0 {
+            return Err(Error::DonationsAlreadyStarted);
+        }
+
+        campaign.metadata_uri = new_metadata_uri.clone();
+        storage::save_campaign(&env, &campaign);
+
+        MetadataUpdated {
+            campaign_id,
+            new_metadata_uri,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Extends an active campaign's deadline by up to 30 days.
+    ///
+    /// Only the campaign's creator may call this. An extension can be
+    /// granted at most once per campaign, and only while the campaign is
+    /// active and before the current deadline has elapsed. Emits
+    /// [`DeadlineExtended`].
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    /// - [`Error::CampaignNotActive`]: campaign is not in `Active` status.
+    /// - [`Error::CampaignExpired`]: current deadline has already elapsed.
+    /// - [`Error::DeadlineAlreadyExtended`]: campaign has already used its
+    ///   one-time extension.
+    /// - [`Error::InvalidDeadlineExtension`]: `new_deadline` is not after the
+    ///   current deadline or extends it by more than 30 days.
+    pub fn extend_deadline(env: Env, campaign_id: u64, new_deadline: u64) -> Result<(), Error> {
+        let mut campaign = storage::campaign(&env, campaign_id)?;
+        campaign.creator.require_auth();
+        Self::ensure_open(&env, &campaign)?;
+
+        if campaign.deadline_extended {
+            return Err(Error::DeadlineAlreadyExtended);
+        }
+
+        if new_deadline <= campaign.deadline
+            || new_deadline > campaign.deadline + MAX_DEADLINE_EXTENSION
+        {
+            return Err(Error::InvalidDeadlineExtension);
+        }
+
+        let old_deadline = campaign.deadline;
+        campaign.deadline = new_deadline;
+        campaign.deadline_extended = true;
+        storage::save_campaign(&env, &campaign);
+
+        DeadlineExtended {
+            campaign_id,
+            old_deadline,
+            new_deadline,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
     /// Donates `amount` tokens from `donor` to `campaign_id`.
     ///
     /// Accepts up to the remaining amount needed to reach the campaign goal
@@ -597,6 +731,9 @@ impl Aidline {
     /// - [`Error::GoalExceeded`]: campaign is already fully funded.
     pub fn donate(env: Env, donor: Address, campaign_id: u64, amount: i128) -> Result<i128, Error> {
         donor.require_auth();
+        if storage::is_paused(&env) {
+            return Err(Error::Paused);
+        }
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -926,6 +1063,10 @@ impl Aidline {
         let mut campaign = storage::campaign(&env, campaign_id)?;
         campaign.verifier.require_auth();
 
+        if storage::is_paused(&env) {
+            return Err(Error::Paused);
+        }
+
         // Only Emergency campaigns may use the fast track.
         if campaign.kind != CampaignKind::Emergency {
             return Err(Error::NotEmergencyCampaign);
@@ -1030,6 +1171,10 @@ impl Aidline {
         proof_uri: String,
     ) -> Result<i128, Error> {
         verifier.require_auth();
+
+        if storage::is_paused(env) {
+            return Err(Error::Paused);
+        }
 
         let mut campaign = storage::campaign(env, campaign_id)?;
         if !campaign.verifiers.contains(&verifier) {
@@ -1322,6 +1467,11 @@ impl Aidline {
         milestone_index: u32,
     ) -> Vec<Address> {
         storage::milestone_approvals(&env, campaign_id, milestone_index)
+    }
+
+    /// Returns `true` if the contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        storage::is_paused(&env)
     }
 
     // ─── Internal ─────────────────────────────────────────────────────────────

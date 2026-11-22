@@ -46,4 +46,14 @@ pub enum Error {
 
     // Issue #10: per-campaign token allowlist
     TokenNotAllowed = 30,
+
+    // Emergency pause switch
+    Paused = 31,
+
+    // Metadata update
+    DonationsAlreadyStarted = 32,
+
+    // Deadline extension
+    DeadlineAlreadyExtended = 33,
+    InvalidDeadlineExtension = 34,
 }
