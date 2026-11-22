@@ -39,7 +39,8 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) first for the roles, storage and lifecyc
 | Double take of the emergency advance               | One advance per campaign, tracked on the campaign record                                                                    | Mitigated      |
 | Last donor is short on refund                      | Refund math rounds down, so dust stays in the contract and the last refund is always payable                                | Mitigated      |
 | Integer overflow in sums and ratios                | Goal is summed with `checked_add`, and release builds enable `overflow-checks`                                              | Mitigated      |
-| Removed verifier locks funds                       | Creator or admin can cancel, which opens refunds. Admin can also reassign the verifier                                      | Mitigated      |
+| Removed verifier locks funds                       | Creator or admin can cancel, which opens refunds. Admin can also reassign the verifier (capped at 2 reassignments)         | Mitigated      |
+| Compromised admin rotates verifier indefinitely ("verifier shopping") | Reassignments capped at 2 per campaign (`MAX_VERIFIER_REASSIGNMENTS`); count is visible in campaign record and view | Mitigated      |
 | Verifier approves false work                       | Verifier bonds, withdrawal delay and admin slashing, with slashed funds flowing to the campaign's donors                    | Partly open    |
 | Verifier colludes with the beneficiary             | A campaign can currently name the same address as verifier and beneficiary. See [issue #14](https://github.com/aidline-org/aidline-contracts/issues/14) | Open           |
 | Oversized metadata or proof URI bloats storage     | No length limit yet. See [issue #13](https://github.com/aidline-org/aidline-contracts/issues/13)                           | Open           |

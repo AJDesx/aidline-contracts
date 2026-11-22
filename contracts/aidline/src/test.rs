@@ -418,6 +418,100 @@ fn expired_campaign_allows_refund_and_blocks_activity() {
     assert_eq!(s.token.balance(&donor), 1000);
 }
 
+// ─── refund_for tests ────────────────────────────────────────────────────────
+
+#[test]
+fn refund_for_pays_donor_never_caller() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+    let relayer = Address::generate(&s.env);
+
+    s.client.donate(&donor, &id, &600);
+    s.client.cancel_campaign(&s.creator, &id);
+
+    // Initial relayer balance is 0
+    assert_eq!(s.token.balance(&relayer), 0);
+    assert_eq!(s.token.balance(&donor), 400);
+
+    // Relayer triggers refund on behalf of donor without donor authorization
+    let auth_relayer = MockAuth {
+        address: &relayer,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "refund_for",
+            args: (donor.clone(), id).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+    let refunded = s.client.mock_auths(&[auth_relayer]).refund_for(&donor, &id);
+    assert_eq!(refunded, 600);
+
+    // Tokens were paid to donor, NOT relayer
+    assert_eq!(s.token.balance(&donor), 1000);
+    assert_eq!(s.token.balance(&relayer), 0);
+}
+
+#[test]
+fn refund_for_prevents_double_refund() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+
+    s.client.donate(&donor, &id, &500);
+    s.client.cancel_campaign(&s.creator, &id);
+
+    // First refund succeeds
+    let refunded = s.client.refund_for(&donor, &id);
+    assert_eq!(refunded, 500);
+
+    // Second refund via refund_for fails with NothingToRefund
+    let second_res = s.client.try_refund_for(&donor, &id);
+    assert_eq!(second_res, Err(Ok(Error::NothingToRefund)));
+
+    // Second refund via refund fails with NothingToRefund
+    let direct_refund_res = s.client.try_refund(&donor, &id);
+    assert_eq!(direct_refund_res, Err(Ok(Error::NothingToRefund)));
+}
+
+#[test]
+fn refund_for_matches_refund_errors_on_non_refundable_campaign() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+
+    s.client.donate(&donor, &id, &300);
+
+    // Campaign is active and on schedule: RefundNotAvailable
+    let res_active = s.client.try_refund_for(&donor, &id);
+    assert_eq!(res_active, Err(Ok(Error::RefundNotAvailable)));
+
+    // Unknown campaign: CampaignNotFound
+    let res_not_found = s.client.try_refund_for(&donor, &999_999);
+    assert_eq!(res_not_found, Err(Ok(Error::CampaignNotFound)));
+
+    // Cancel campaign, but test non-contributor
+    s.client.cancel_campaign(&s.creator, &id);
+    let non_contributor = Address::generate(&s.env);
+    let res_nothing = s.client.try_refund_for(&non_contributor, &id);
+    assert_eq!(res_nothing, Err(Ok(Error::NothingToRefund)));
+}
+
+#[test]
+fn refund_for_requires_no_donor_auth() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1000);
+
+    s.client.donate(&donor, &id, &400);
+    s.client.cancel_campaign(&s.creator, &id);
+
+    // Invocation with empty mock_auths (no auth whatsoever provided)
+    let refunded = s.client.mock_auths(&[]).refund_for(&donor, &id);
+    assert_eq!(refunded, 400);
+    assert_eq!(s.token.balance(&donor), 1000);
+}
+
 #[test]
 fn is_refundable_covers_all_statuses() {
     let s = Setup::new();
@@ -830,6 +924,156 @@ fn set_admin_updates_stored_admin() {
     assert_eq!(s.client.admin(), new_admin);
 }
 
+// ─── Two-step admin transfer tests ───────────────────────────────────────────
+
+#[test]
+fn propose_admin_does_nothing_until_accepted() {
+    let s = Setup::new();
+    let candidate = Address::generate(&s.env);
+
+    assert_eq!(s.client.pending_admin(), None);
+    s.client.propose_admin(&candidate);
+
+    // Pending admin is recorded, but active admin remains unchanged.
+    assert_eq!(s.client.pending_admin(), Some(candidate.clone()));
+    assert_eq!(s.client.admin(), s.admin);
+
+    // Accept finalizes the transfer
+    s.client.accept_admin();
+    assert_eq!(s.client.admin(), candidate);
+    assert_eq!(s.client.pending_admin(), None);
+}
+
+#[test]
+fn accept_admin_fails_when_no_pending_proposal() {
+    let s = Setup::new();
+    assert_eq!(s.client.pending_admin(), None);
+    let res = s.client.try_accept_admin();
+    assert_eq!(res, Err(Ok(Error::NoPendingAdmin)));
+}
+
+#[test]
+fn new_proposal_replaces_pending_proposal() {
+    let s = Setup::new();
+    let candidate_a = Address::generate(&s.env);
+    let candidate_b = Address::generate(&s.env);
+
+    s.client.propose_admin(&candidate_a);
+    assert_eq!(s.client.pending_admin(), Some(candidate_a.clone()));
+
+    // Replace proposal with candidate_b
+    s.client.propose_admin(&candidate_b);
+    assert_eq!(s.client.pending_admin(), Some(candidate_b.clone()));
+
+    // Candidate A cannot accept because auth for candidate B is required
+    let auth_a = MockAuth {
+        address: &candidate_a,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+    let res_a = s.client.mock_auths(&[auth_a]).try_accept_admin();
+    assert_eq!(res_a.unwrap_err(), Err(InvokeError::Abort));
+
+    // Candidate B can accept
+    let auth_b = MockAuth {
+        address: &candidate_b,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+    s.client.mock_auths(&[auth_b]).accept_admin();
+    assert_eq!(s.client.admin(), candidate_b);
+    assert_eq!(s.client.pending_admin(), None);
+}
+
+#[test]
+fn only_pending_admin_can_accept() {
+    let s = Setup::new();
+    let candidate = Address::generate(&s.env);
+    let stranger = Address::generate(&s.env);
+
+    s.client.propose_admin(&candidate);
+
+    let auth_stranger = MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+    let res = s.client.mock_auths(&[auth_stranger]).try_accept_admin();
+    assert_eq!(res.unwrap_err(), Err(InvokeError::Abort));
+    assert_eq!(s.client.admin(), s.admin);
+}
+
+#[test]
+fn events_emitted_for_propose_and_accept() {
+    let s = Setup::new();
+    let candidate = Address::generate(&s.env);
+
+    s.client.propose_admin(&candidate);
+    assert!(
+        !s.env.events().all().events().is_empty(),
+        "AdminProposed event not emitted"
+    );
+
+    s.client.accept_admin();
+    assert!(
+        !s.env.events().all().events().is_empty(),
+        "AdminAccepted event not emitted"
+    );
+}
+
+#[test]
+fn set_admin_clears_pending_proposal() {
+    let s = Setup::new();
+    let candidate_a = Address::generate(&s.env);
+    let candidate_b = Address::generate(&s.env);
+
+    s.client.propose_admin(&candidate_a);
+    assert_eq!(s.client.pending_admin(), Some(candidate_a));
+
+    s.client.set_admin(&candidate_b);
+    assert_eq!(s.client.admin(), candidate_b);
+    assert_eq!(s.client.pending_admin(), None);
+
+    let res = s.client.try_accept_admin();
+    assert_eq!(res, Err(Ok(Error::NoPendingAdmin)));
+}
+
+#[test]
+fn non_admin_cannot_propose_admin() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    let candidate = Address::generate(&s.env);
+
+    let auth = MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "propose_admin",
+            args: (candidate.clone(),).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+    let expected_auth_err = soroban_sdk::Error::from_type_and_code(
+        soroban_sdk::xdr::ScErrorType::Context,
+        soroban_sdk::xdr::ScErrorCode::InvalidAction,
+    );
+    let res = s.client.mock_auths(&[auth]).try_propose_admin(&candidate);
+    assert_eq!(res.unwrap_err().unwrap(), expected_auth_err);
+    assert_eq!(s.client.pending_admin(), None);
+}
+
 // ─── Issue #3 Tests: Exact-goal donations ─────────────────────────────────────
 
 #[test]
@@ -976,6 +1220,49 @@ fn new_verifier_can_approve_after_reassignment() {
     let released = s.client.approve_milestone(&id, &s.proof());
     assert_eq!(released, 300);
     assert_eq!(s.client.get_campaign(&id).verifier, new_v);
+}
+
+#[test]
+fn reassign_verifier_caps_at_maximum() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    // Initial reassignment count is 0
+    assert_eq!(s.client.verifier_reassignments(&id), 0);
+    assert_eq!(s.client.get_campaign(&id).verifier_reassignments, 0);
+
+    let v1 = Address::generate(&s.env);
+    let v2 = Address::generate(&s.env);
+    let v3 = Address::generate(&s.env);
+    s.client.add_verifier(&v1);
+    s.client.add_verifier(&v2);
+    s.client.add_verifier(&v3);
+
+    // Reassignment 1 succeeds
+    s.client.reassign_verifier(&id, &v1);
+    assert_eq!(s.client.verifier_reassignments(&id), 1);
+    assert_eq!(s.client.get_campaign(&id).verifier_reassignments, 1);
+    assert_eq!(s.client.get_campaign(&id).verifier, v1);
+
+    // Reassignment 2 succeeds (reaches maximum of 2)
+    s.client.reassign_verifier(&id, &v2);
+    assert_eq!(s.client.verifier_reassignments(&id), 2);
+    assert_eq!(s.client.get_campaign(&id).verifier_reassignments, 2);
+    assert_eq!(s.client.get_campaign(&id).verifier, v2);
+
+    // Reassignment 3 rejected with MaxVerifierReassignmentsExceeded
+    let res3 = s.client.try_reassign_verifier(&id, &v3);
+    assert_eq!(res3, Err(Ok(Error::MaxVerifierReassignmentsExceeded)));
+    assert_eq!(s.client.verifier_reassignments(&id), 2);
+    assert_eq!(s.client.get_campaign(&id).verifier_reassignments, 2);
+    assert_eq!(s.client.get_campaign(&id).verifier, v2);
+}
+
+#[test]
+fn verifier_reassignments_view_errors_for_nonexistent_campaign() {
+    let s = Setup::new();
+    let res = s.client.try_verifier_reassignments(&999_999);
+    assert_eq!(res, Err(Ok(Error::CampaignNotFound)));
 }
 
 // ─── Verifier bonds (issue #29) ───────────────────────────────────────────────
@@ -1430,6 +1717,119 @@ fn a_pledge_moves_no_money_until_a_milestone_is_approved() {
     assert_eq!(s.token.balance(&donor), 700);
     assert_eq!(s.token.balance(&s.beneficiary), 300);
     assert_eq!(s.client.get_pledge(&pledge_id).unwrap().pulled_amount, 300);
+}
+
+#[test]
+fn donor_can_cancel_pledge() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1_000);
+    let expiry = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&donor, &s.client.address, &300, &expiry);
+
+    let pledge_id = s.client.create_pledge(&donor, &id, &300);
+    assert!(s.client.get_pledge(&pledge_id).unwrap().active);
+
+    s.client.cancel_pledge(&donor, &pledge_id);
+    assert!(!s.env.events().all().events().is_empty());
+
+    let pledge = s.client.get_pledge(&pledge_id).unwrap();
+    assert!(!pledge.active);
+}
+
+#[test]
+fn cancelled_pledge_is_never_pulled() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1_000);
+    let other_donor = s.donor(1_000);
+    let expiry = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&donor, &s.client.address, &300, &expiry);
+
+    let pledge_id = s.client.create_pledge(&donor, &id, &300);
+    s.client.cancel_pledge(&donor, &pledge_id);
+
+    // Direct donation covers milestone 0 (300)
+    s.client.donate(&other_donor, &id, &300);
+
+    // Milestone approval pulls from active pledges and escrow
+    s.client.approve_milestone(&id, &s.proof());
+
+    // Donor balance was NOT pulled
+    assert_eq!(s.token.balance(&donor), 1_000);
+    let pledge = s.client.get_pledge(&pledge_id).unwrap();
+    assert_eq!(pledge.pulled_amount, 0);
+    assert!(!pledge.active);
+}
+
+#[test]
+fn cancelling_pledge_twice_fails() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1_000);
+    let expiry = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&donor, &s.client.address, &300, &expiry);
+
+    let pledge_id = s.client.create_pledge(&donor, &id, &300);
+    s.client.cancel_pledge(&donor, &pledge_id);
+
+    let res = s.client.try_cancel_pledge(&donor, &pledge_id);
+    assert_eq!(res, Err(Ok(Error::PledgeAlreadyCancelled)));
+}
+
+#[test]
+fn only_pledge_donor_can_cancel() {
+    let s = Setup::new();
+    let id = s.campaign();
+    let donor = s.donor(1_000);
+    let stranger = Address::generate(&s.env);
+    let expiry = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&donor, &s.client.address, &300, &expiry);
+
+    let pledge_id = s.client.create_pledge(&donor, &id, &300);
+
+    // Stranger calls with stranger's auth
+    let auth = MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "cancel_pledge",
+            args: (stranger.clone(), pledge_id).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+    let res = s
+        .client
+        .mock_auths(&[auth])
+        .try_cancel_pledge(&stranger, &pledge_id);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+
+    // Stranger pretending to pass donor address without donor's auth
+    let auth_fake = MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &s.client.address,
+            fn_name: "cancel_pledge",
+            args: (donor.clone(), pledge_id).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    };
+    let res_fake = s
+        .client
+        .mock_auths(&[auth_fake])
+        .try_cancel_pledge(&donor, &pledge_id);
+    assert_eq!(res_fake.unwrap_err(), Err(InvokeError::Abort));
+
+    // Pledge remains active
+    assert!(s.client.get_pledge(&pledge_id).unwrap().active);
+}
+
+#[test]
+fn cancel_nonexistent_pledge_fails() {
+    let s = Setup::new();
+    let donor = Address::generate(&s.env);
+    let res = s.client.try_cancel_pledge(&donor, &999_999);
+    assert_eq!(res, Err(Ok(Error::InvalidPledge)));
 }
 
 #[test]
