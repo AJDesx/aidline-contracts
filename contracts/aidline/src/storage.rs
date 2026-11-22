@@ -29,6 +29,20 @@ pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&DataKey::Admin, admin);
 }
 
+pub fn pending_admin(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::PendingAdmin)
+}
+
+pub fn set_pending_admin(env: &Env, pending: &Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingAdmin, pending);
+}
+
+pub fn remove_pending_admin(env: &Env) {
+    env.storage().instance().remove(&DataKey::PendingAdmin);
+}
+
 pub fn token(env: &Env) -> Address {
     env.storage().instance().get(&DataKey::Token).unwrap()
 }

@@ -108,7 +108,7 @@ impl VerifierUpdated {
     }
 }
 
-// ─── Issue #2: Admin change event ─────────────────────────────────────────────
+// ─── Admin change events ─────────────────────────────────────────────────────
 
 /// Emitted when the admin transfers control to a new address.
 pub struct AdminChanged {
@@ -121,6 +121,36 @@ impl AdminChanged {
         env.events().publish(
             (symbol_short!("adm_chng"), self.old.clone()),
             self.new.clone(),
+        );
+    }
+}
+
+/// Emitted when an admin nominates a new address for two-step admin transfer.
+pub struct AdminProposed {
+    pub current_admin: Address,
+    pub pending_admin: Address,
+}
+
+impl AdminProposed {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("adm_prop"), self.current_admin.clone()),
+            self.pending_admin.clone(),
+        );
+    }
+}
+
+/// Emitted when the pending admin accepts the transfer.
+pub struct AdminAccepted {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+impl AdminAccepted {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("adm_acc"), self.old_admin.clone()),
+            self.new_admin.clone(),
         );
     }
 }

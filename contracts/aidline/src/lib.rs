@@ -25,12 +25,13 @@ pub use types::{
 };
 
 use events::{
-    AdminChanged, BondSlashed, BondWithdrawn, CampaignCancelled, CampaignCreated, ContractPaused,
-    ContractUnpaused, ContractUpgraded, DeadlineExtended, Donated, EmergencyAdvanceReleased,
-    MatchingApplied, MetadataUpdated, MilestoneApproved, MilestoneRejected, MilestoneReleased,
-    PlatformFeeUpdated, PledgeCreated, PledgePulled, PledgeSettlement, PledgeSkipped, Refunded,
-    SponsorPoolDeposited, SponsorPoolReturned, TokenAllowlistUpdated, TreasuryUpdated,
-    VerifierBondPosted, VerifierDeregistered, VerifierReassigned, VerifierUpdated,
+    AdminAccepted, AdminChanged, AdminProposed, BondSlashed, BondWithdrawn, CampaignCancelled,
+    CampaignCreated, ContractPaused, ContractUnpaused, ContractUpgraded, DeadlineExtended, Donated,
+    EmergencyAdvanceReleased, MatchingApplied, MetadataUpdated, MilestoneApproved,
+    MilestoneRejected, MilestoneReleased, PlatformFeeUpdated, PledgeCreated, PledgePulled,
+    PledgeSettlement, PledgeSkipped, Refunded, SponsorPoolDeposited, SponsorPoolReturned,
+    TokenAllowlistUpdated, TreasuryUpdated, VerifierBondPosted, VerifierDeregistered,
+    VerifierReassigned, VerifierUpdated,
 };
 
 const MAX_MILESTONES: u32 = 20;
@@ -124,11 +125,62 @@ impl Aidline {
         let old_admin = storage::admin(&env);
         old_admin.require_auth();
         storage::set_admin(&env, &new_admin);
+        storage::remove_pending_admin(&env);
         AdminChanged {
             old: old_admin,
             new: new_admin,
         }
         .publish(&env);
+    }
+
+    /// Proposes transferring admin control to `new_admin`.
+    ///
+    /// Only the current admin may call this. The transfer is not finalized
+    /// until `new_admin` calls [`accept_admin`]. Calling this again replaces
+    /// any existing pending proposal. Emits [`AdminProposed`].
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the current admin.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let current_admin = storage::admin(&env);
+        current_admin.require_auth();
+        storage::set_pending_admin(&env, &new_admin);
+        AdminProposed {
+            current_admin,
+            pending_admin: new_admin,
+        }
+        .publish(&env);
+    }
+
+    /// Finalizes a pending admin transfer.
+    ///
+    /// Must be called with authorization from the pending admin set via
+    /// [`propose_admin`]. Updates the stored admin, clears the pending proposal,
+    /// and emits [`AdminAccepted`] and [`AdminChanged`].
+    ///
+    /// # Errors
+    /// - [`Error::NoPendingAdmin`]: no admin transfer proposal is currently pending.
+    /// - [`Error::Unauthorized`]: caller is not the pending admin.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let pending = storage::pending_admin(&env).ok_or(Error::NoPendingAdmin)?;
+        pending.require_auth();
+        let old_admin = storage::admin(&env);
+        storage::set_admin(&env, &pending);
+        storage::remove_pending_admin(&env);
+
+        AdminAccepted {
+            old_admin: old_admin.clone(),
+            new_admin: pending.clone(),
+        }
+        .publish(&env);
+
+        AdminChanged {
+            old: old_admin,
+            new: pending,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     /// Pauses the contract in emergencies.
@@ -1725,6 +1777,11 @@ impl Aidline {
     /// Returns the current admin address.
     pub fn admin(env: Env) -> Address {
         storage::admin(&env)
+    }
+
+    /// Returns the pending admin address nominated via [`propose_admin`], or `None`.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        storage::pending_admin(&env)
     }
 
     /// Returns the token contract address used by all campaigns.

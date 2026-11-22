@@ -65,4 +65,7 @@ pub enum Error {
 
     // Optional minimum donation
     DonationBelowMinimum = 37,
+
+    // Two-step admin transfer
+    NoPendingAdmin = 38,
 }

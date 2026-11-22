@@ -164,4 +164,6 @@ pub enum DataKey {
     // Platform fee and treasury
     PlatformFee,
     Treasury,
+    // Two-step admin transfer
+    PendingAdmin,
 }
