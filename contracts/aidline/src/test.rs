@@ -404,6 +404,71 @@ fn expired_campaign_allows_refund_and_blocks_activity() {
 }
 
 #[test]
+fn is_refundable_covers_all_statuses() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    // 1. Active campaign within deadline is not refundable
+    assert!(!s.client.is_refundable(&id));
+
+    // 2. Cancelled campaign is refundable
+    let cancel_id = s.campaign();
+    s.client.cancel_campaign(&s.creator, &cancel_id);
+    assert_eq!(
+        s.client.get_campaign(&cancel_id).status,
+        CampaignStatus::Cancelled
+    );
+    assert!(s.client.is_refundable(&cancel_id));
+
+    // 3. Expired active campaign is refundable
+    let expired_id = s.campaign();
+    s.pass_deadline();
+    assert_eq!(
+        s.client.get_campaign(&expired_id).status,
+        CampaignStatus::Active
+    );
+    assert!(s.client.is_refundable(&expired_id));
+
+    // 4. Overdue milestone in active campaign is refundable
+    let s2 = Setup::new();
+    let now = s2.env.ledger().timestamp();
+    let due_dates = vec![&s2.env, now + 10 * DAY, now + 20 * DAY];
+    let milestones = vec![&s2.env, 300, 700];
+    let overdue_id = s2.client.create_campaign_with_due_dates(
+        &s2.creator,
+        &s2.beneficiary,
+        &s2.verifier,
+        &s2.token.address,
+        &CampaignKind::Climate,
+        &String::from_str(&s2.env, "ipfs://overdue"),
+        &(now + 30 * DAY),
+        &milestones,
+        &due_dates,
+    );
+    assert!(!s2.client.is_refundable(&overdue_id));
+    // Advance past milestone 0 due date but before campaign deadline
+    s2.env.ledger().set_timestamp(now + 11 * DAY);
+    assert!(s2.client.is_refundable(&overdue_id));
+
+    // 5. Completed campaign is not refundable
+    let s3 = Setup::new();
+    let completed_id = s3.campaign();
+    let donor = s3.donor(1000);
+    s3.client.donate(&donor, &completed_id, &1000);
+    s3.client.approve_milestone(&completed_id, &s3.proof()); // 300
+    s3.client.approve_milestone(&completed_id, &s3.proof()); // 300
+    s3.client.approve_milestone(&completed_id, &s3.proof()); // 400
+    assert_eq!(
+        s3.client.get_campaign(&completed_id).status,
+        CampaignStatus::Completed
+    );
+    assert!(!s3.client.is_refundable(&completed_id));
+
+    // 6. Non-existent campaign is not refundable
+    assert!(!s3.client.is_refundable(&999_999));
+}
+
+#[test]
 fn only_creator_or_admin_can_cancel() {
     let s = Setup::new();
     let id = s.campaign();

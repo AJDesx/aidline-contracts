@@ -1451,6 +1451,24 @@ impl Aidline {
         storage::contribution(&env, campaign_id, &donor)
     }
 
+    /// Returns `true` if donors can claim refunds for `campaign_id`.
+    ///
+    /// Mirrors the availability checks in [`refund`]: a campaign is refundable
+    /// if it has been cancelled, if it is active and past its deadline, or if
+    /// a milestone is overdue. Returns `false` if the campaign is active and on
+    /// schedule, completed, or does not exist.
+    pub fn is_refundable(env: Env, campaign_id: u64) -> bool {
+        let Ok(campaign) = storage::campaign(&env, campaign_id) else {
+            return false;
+        };
+        let expired = campaign.status == CampaignStatus::Active
+            && env.ledger().timestamp() > campaign.deadline;
+        let is_overdue = Self::is_overdue(&env, &campaign);
+        let ended = campaign.status == CampaignStatus::Cancelled || expired;
+
+        ended || is_overdue
+    }
+
     /// Returns `true` if `who` is currently a registered verifier.
     pub fn is_verifier(env: Env, who: Address) -> bool {
         storage::is_verifier(&env, &who)
