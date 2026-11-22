@@ -3866,3 +3866,96 @@ fn verifier_profile_only_admin_and_only_registered_verifiers() {
         Err(Ok(Error::UriTooLong))
     );
 }
+
+#[test]
+fn donors_pagination_returns_stable_order_and_no_duplicates() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    let d1 = s.donor(100);
+    let d2 = s.donor(100);
+    let d3 = s.donor(100);
+    let d4 = s.donor(100);
+    let d5 = s.donor(100);
+
+    // Donate in order: d1, d2, d3, d4, d5
+    s.client.donate(&d1, &id, &100);
+    s.client.donate(&d2, &id, &100);
+    s.client.donate(&d3, &id, &100);
+    s.client.donate(&d4, &id, &100);
+    s.client.donate(&d5, &id, &100);
+
+    // Page 1: start 0, limit 2
+    let page1 = s.client.donors(&id, &0, &2);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0).unwrap(), d1);
+    assert_eq!(page1.get(1).unwrap(), d2);
+
+    // Page 2: start 2, limit 2
+    let page2 = s.client.donors(&id, &2, &2);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).unwrap(), d3);
+    assert_eq!(page2.get(1).unwrap(), d4);
+
+    // Page 3: start 4, limit 2
+    let page3 = s.client.donors(&id, &4, &2);
+    assert_eq!(page3.len(), 1);
+    assert_eq!(page3.get(0).unwrap(), d5);
+
+    // Out of bounds start
+    let empty_page = s.client.donors(&id, &5, &2);
+    assert_eq!(empty_page.len(), 0);
+
+    // Limit of zero
+    let zero_page = s.client.donors(&id, &0, &0);
+    assert_eq!(zero_page.len(), 0);
+}
+
+#[test]
+fn repeat_donors_are_not_added_twice() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    let d1 = s.donor(300);
+    let d2 = s.donor(300);
+    let d3 = s.donor(300);
+
+    // d1 donates first time
+    s.client.donate(&d1, &id, &100);
+    // d2 donates first time
+    s.client.donate(&d2, &id, &100);
+    // d1 repeat donation
+    s.client.donate(&d1, &id, &100);
+    // d2 repeat donation
+    s.client.donate(&d2, &id, &100);
+    // d3 donates first time
+    s.client.donate(&d3, &id, &100);
+
+    let all = s.client.donors(&id, &0, &50);
+    assert_eq!(all.len(), 3);
+    assert_eq!(all.get(0).unwrap(), d1);
+    assert_eq!(all.get(1).unwrap(), d2);
+    assert_eq!(all.get(2).unwrap(), d3);
+}
+
+#[test]
+fn donors_limit_above_cap_is_clamped() {
+    let s = Setup::new();
+    let id = s.campaign();
+
+    let d1 = s.donor(100);
+    let d2 = s.donor(100);
+    s.client.donate(&d1, &id, &50);
+    s.client.donate(&d2, &id, &50);
+
+    // Request limit = 100 which exceeds MAX_DONORS_PAGE_LIMIT (50).
+    // Should be clamped gracefully and return all 2 donors without failure.
+    let res = s.client.donors(&id, &0, &100);
+    assert_eq!(res.len(), 2);
+    assert_eq!(res.get(0).unwrap(), d1);
+    assert_eq!(res.get(1).unwrap(), d2);
+
+    // Non-existent campaign returns empty vector
+    let none_res = s.client.donors(&999, &0, &50);
+    assert_eq!(none_res.len(), 0);
+}

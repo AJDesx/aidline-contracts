@@ -174,4 +174,6 @@ pub enum DataKey {
     PendingAdmin,
     // Verifier profile URI
     VerifierProfile(Address),
+    // Paginated donors list
+    CampaignDonors(u64),
 }

@@ -52,6 +52,8 @@ const MAX_DEADLINE_EXTENSION: u64 = 30 * 86_400;
 
 /// Maximum number of times a campaign's verifier may be reassigned.
 pub const MAX_VERIFIER_REASSIGNMENTS: u32 = 2;
+/// Maximum page limit for paginated donor enumeration.
+const MAX_DONORS_PAGE_LIMIT: u32 = 50;
 
 /// The emergency advance is capped at 20% of the campaign goal (200 bps out of
 /// 1000, or equivalently goal / 5).  Integer arithmetic: advance = goal / 5
@@ -1027,6 +1029,7 @@ impl Aidline {
         storage::save_campaign(&env, &campaign);
         let previous = storage::contribution(&env, campaign_id, &donor);
         storage::set_contribution(&env, campaign_id, &donor, previous + accepted);
+        storage::add_campaign_donor(&env, campaign_id, &donor);
 
         Donated {
             campaign_id,
@@ -1933,6 +1936,31 @@ impl Aidline {
         storage::contribution(&env, campaign_id, &donor)
     }
 
+    /// Returns a paginated list of unique donor addresses for `campaign_id`.
+    ///
+    /// Addresses are returned in stable order (order of first donation). `limit` is clamped
+    /// to at most [`MAX_DONORS_PAGE_LIMIT`]. Each donor appears exactly once even after repeat donations.
+    pub fn donors(env: Env, campaign_id: u64, start: u32, limit: u32) -> Vec<Address> {
+        let all_donors = storage::campaign_donors(&env, campaign_id);
+        let total = all_donors.len();
+        if start >= total || limit == 0 {
+            return Vec::new(&env);
+        }
+
+        let effective_limit = limit.min(MAX_DONORS_PAGE_LIMIT);
+        let end = (start + effective_limit).min(total);
+
+        let mut page = Vec::new(&env);
+        let mut i = start;
+        while i < end {
+            if let Some(donor) = all_donors.get(i) {
+                page.push_back(donor);
+            }
+            i += 1;
+        }
+        page
+    }
+
     /// Returns `true` if donors can claim refunds for `campaign_id`.
     ///
     /// Mirrors the availability checks in [`refund`]: a campaign is refundable
@@ -2170,6 +2198,7 @@ impl Aidline {
             // Record as contribution so donor shares in refunds.
             let prev = storage::contribution(env, campaign_id, &pledge.donor);
             storage::set_contribution(env, campaign_id, &pledge.donor, prev + pull);
+            storage::add_campaign_donor(env, campaign_id, &pledge.donor);
 
             // Increase campaign.raised.
             campaign.raised = campaign.raised.checked_add(pull).unwrap_or(campaign.raised);
