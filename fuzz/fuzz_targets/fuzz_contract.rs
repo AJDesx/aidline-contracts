@@ -1,8 +1,9 @@
 //! Fuzz harness for the Aidline contract.
 //!
-//! This target drives randomized sequences of the primary contract operations
-//! (create, donate, approve, cancel, refund) and checks a set of financial
-//! invariants after each step.
+//! This target drives randomized sequences of contract operations
+//! (create, donate, approve, cancel, refund, sponsor matching pools,
+//! pledges, and verifier bonds with withdrawal/slashing) and checks
+//! financial invariants after each step.
 //!
 //! # Running locally
 //!
@@ -28,16 +29,17 @@
 //! After every operation the harness verifies:
 //!
 //! 1. **No negative balances.** `campaign.raised >= 0`, `campaign.released >= 0`,
-//!    `pool.remaining >= 0`, `pool.matched >= 0`.
-//! 2. **Released never exceeds raised.**  `campaign.released <= campaign.raised`.
-//! 3. **Released never exceeds goal.**  `campaign.released <= campaign.goal`.
-//! 4. **Raised never exceeds goal.**  `campaign.raised <= campaign.goal`.
-//! 5. **Milestone counters are consistent.**  `milestones_released <= milestones.len()`.
-//! 6. **Sponsor pool accounting is consistent.**  `pool.matched + pool.remaining == pool.deposited`.
-//! 7. **Refunds plus releases never exceed raised.**  After all refunds, the
-//!    contract balance equals 0 (or a small non-negative dust amount due to
-//!    integer truncation).
-//! 8. **State transitions are valid.**  A Completed or Cancelled campaign never
+//!    `pool.remaining >= 0`, `pool.matched >= 0`, `bond.remaining >= 0`.
+//! 2. **Released never exceeds raised.** `campaign.released <= campaign.raised`.
+//! 3. **Released never exceeds goal.** `campaign.released <= campaign.goal`.
+//! 4. **Raised stays within goal plus bond additions.** `campaign.raised <= campaign.goal + bond_deposited`.
+//! 5. **Milestone counters are consistent.** `milestones_released <= milestones.len()`.
+//! 6. **Sponsor pool accounting is consistent.** `pool.matched + pool.remaining == pool.deposited`.
+//! 7. **Bond accounting is consistent.** `bond_remaining <= bond_deposited`.
+//! 8. **Contract balance equals escrow plus unreturned pools and bonds.**
+//!    The contract balance matches unreleased escrow (`raised - released - refunded`)
+//!    plus held sponsor pools and verifier bonds within rounding dust.
+//! 9. **State transitions are valid.** A Completed or Cancelled campaign never
 //!    accepts new donations or milestone approvals.
 //!
 //! # Note on execution
@@ -49,6 +51,7 @@
 #![no_main]
 
 use aidline::{Aidline, AidlineClient, CampaignKind, CampaignStatus};
+use libfuzzer_sys::arbitrary::{self, Arbitrary};
 use libfuzzer_sys::fuzz_target;
 use soroban_sdk::{
     Address, Env, String as SorobanString,
@@ -60,12 +63,8 @@ use soroban_sdk::{
 // ─── Structured fuzz input ────────────────────────────────────────────────────
 
 /// One operation in a random sequence.
-///
-/// `cargo-fuzz` decodes raw bytes using `arbitrary::Arbitrary` (derived via
-/// `libfuzzer_sys`). We keep the enum small so the fuzzer can reach all arms
-/// with a moderate number of iterations.
-#[derive(Debug)]
-enum Op {
+#[derive(Debug, Clone, Copy, Arbitrary)]
+pub enum Op {
     Donate {
         amount_mod: u32,
     },
@@ -82,19 +81,29 @@ enum Op {
         donation_mod: u32,
     },
     ReturnSponsorPool,
-    /// Advance the ledger timestamp, potentially expiring the campaign.
     AdvanceTime {
         seconds: u32,
     },
+    CreatePledge {
+        use_donor_b: bool,
+        amount_mod: u32,
+    },
+    RegisterWithBond {
+        bond_amount_mod: u32,
+    },
+    DeregisterVerifier,
+    WithdrawBond,
+    SlashVerifier {
+        slash_amount_mod: u32,
+    },
 }
 
-/// Decode raw bytes into a sequence of operations using a simple byte-driven
-/// approach (no `arbitrary` crate dependency required).
+/// Decode raw bytes into a sequence of operations using a byte-driven approach.
 fn parse_ops(data: &[u8]) -> Vec<Op> {
     let mut ops = Vec::new();
     let mut i = 0;
     while i < data.len() {
-        let tag = data[i] % 9;
+        let tag = data[i] % 13;
         i += 1;
         let op = match tag {
             0 => {
@@ -146,6 +155,40 @@ fn parse_ops(data: &[u8]) -> Vec<Op> {
                 i += 4;
                 Op::AdvanceTime { seconds }
             }
+            8 => {
+                let use_donor_b = i < data.len() && data[i] % 2 == 1;
+                i += 1;
+                let amount_mod = if i + 3 < data.len() {
+                    u32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]])
+                } else {
+                    50
+                };
+                i += 4;
+                Op::CreatePledge {
+                    use_donor_b,
+                    amount_mod,
+                }
+            }
+            9 => {
+                let bond_amount_mod = if i + 3 < data.len() {
+                    u32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]])
+                } else {
+                    100
+                };
+                i += 4;
+                Op::RegisterWithBond { bond_amount_mod }
+            }
+            10 => Op::DeregisterVerifier,
+            11 => Op::WithdrawBond,
+            12 => {
+                let slash_amount_mod = if i + 3 < data.len() {
+                    u32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]])
+                } else {
+                    50
+                };
+                i += 4;
+                Op::SlashVerifier { slash_amount_mod }
+            }
             _ => Op::Cancel,
         };
         ops.push(op);
@@ -171,6 +214,8 @@ struct Model {
     sponsor_deposited: i128,
     sponsor_remaining: i128,
     sponsor_matched: i128,
+    bond_deposited: i128,
+    bond_remaining: i128,
 }
 
 impl Model {
@@ -180,13 +225,19 @@ impl Model {
         assert!(self.released >= 0, "released < 0");
         assert!(self.sponsor_remaining >= 0, "sponsor_remaining < 0");
         assert!(self.sponsor_matched >= 0, "sponsor_matched < 0");
+        assert!(self.bond_remaining >= 0, "bond_remaining < 0");
 
         // 2. Released never exceeds raised
         assert!(self.released <= self.raised, "released > raised");
 
-        // 3 & 4. Raised and released stay within goal
-        assert!(self.raised <= self.goal, "raised > goal");
+        // 3. Released never exceeds goal
         assert!(self.released <= self.goal, "released > goal");
+
+        // 4. Raised stays within goal plus slashed bond compensation
+        assert!(
+            self.raised <= self.goal + self.bond_deposited,
+            "raised > goal + bond_deposited"
+        );
 
         // 5. Milestone counters are consistent
         assert!(
@@ -199,6 +250,12 @@ impl Model {
             self.sponsor_matched + self.sponsor_remaining,
             self.sponsor_deposited,
             "sponsor_matched + sponsor_remaining != sponsor_deposited"
+        );
+
+        // 7. Bond remaining is consistent
+        assert!(
+            self.bond_remaining <= self.bond_deposited,
+            "bond_remaining > bond_deposited"
         );
     }
 }
@@ -226,6 +283,8 @@ fuzz_target!(|data: &[u8]| {
     let verifier = Address::generate(&env);
     client.add_verifier(&verifier);
 
+    let bonded_verifier = Address::generate(&env);
+
     let creator = Address::generate(&env);
     let beneficiary = Address::generate(&env);
     let donor_a = Address::generate(&env);
@@ -237,6 +296,7 @@ fuzz_target!(|data: &[u8]| {
     sac_client.mint(&donor_a, &big);
     sac_client.mint(&donor_b, &big);
     sac_client.mint(&sponsor, &big);
+    sac_client.mint(&bonded_verifier, &big);
 
     // Create campaign: 3 milestones of 100/200/300 = 600 total
     let milestones = soroban_vec![&env, 100_i128, 200_i128, 300_i128];
@@ -265,9 +325,13 @@ fuzz_target!(|data: &[u8]| {
         sponsor_deposited: 0,
         sponsor_remaining: 0,
         sponsor_matched: 0,
+        bond_deposited: 0,
+        bond_remaining: 0,
     };
 
     let mut sponsor_pool_active = false;
+    let mut bond_active = false;
+    let mut total_refunded = 0i128;
 
     // ── Execute ops ─────────────────────────────────────────────────────────
     for op in parse_ops(data) {
@@ -275,7 +339,6 @@ fuzz_target!(|data: &[u8]| {
             Op::Donate { amount_mod } => {
                 let amount = (amount_mod as i128 % 601).max(1);
                 let _ = client.try_donate(&donor_a, &campaign_id, &amount);
-                // Sync model from contract state after each op
                 {
                     let c = client.get_campaign(&campaign_id);
                     model.raised = c.raised;
@@ -304,7 +367,9 @@ fuzz_target!(|data: &[u8]| {
             }
             Op::Refund { use_donor_b } => {
                 let donor = if use_donor_b { &donor_b } else { &donor_a };
-                let _ = client.try_refund(donor, &campaign_id);
+                if let Ok(Ok(refund_amount)) = client.try_refund(donor, &campaign_id) {
+                    total_refunded += refund_amount;
+                }
                 {
                     let c = client.get_campaign(&campaign_id);
                     model.raised = c.raised;
@@ -362,12 +427,102 @@ fuzz_target!(|data: &[u8]| {
                 let now = env.ledger().timestamp();
                 env.ledger().set_timestamp(now + seconds as u64);
             }
+            Op::CreatePledge {
+                use_donor_b,
+                amount_mod,
+            } => {
+                let donor = if use_donor_b { &donor_b } else { &donor_a };
+                let amount = (amount_mod as i128 % 200).max(1);
+                token_client.approve(
+                    donor,
+                    &contract_id,
+                    &amount,
+                    &(env.ledger().sequence() + 10_000),
+                );
+                let _ = client.try_create_pledge(donor, &campaign_id, &amount);
+            }
+            Op::RegisterWithBond { bond_amount_mod } => {
+                if !bond_active {
+                    let _ = client.try_set_bond_requirement(&50);
+                    let bond_amount = ((bond_amount_mod as i128 % 500) + 50).max(50);
+                    if client
+                        .try_register_with_bond(&bonded_verifier, &bond_amount)
+                        .is_ok()
+                    {
+                        bond_active = true;
+                        model.bond_deposited = bond_amount;
+                        model.bond_remaining = bond_amount;
+                    }
+                }
+            }
+            Op::DeregisterVerifier => {
+                if bond_active {
+                    let _ = client.try_deregister_verifier(&admin, &bonded_verifier);
+                }
+            }
+            Op::WithdrawBond => {
+                if bond_active {
+                    if client.try_withdraw_bond(&bonded_verifier).is_ok() {
+                        bond_active = false;
+                        model.bond_remaining = 0;
+                    }
+                }
+            }
+            Op::SlashVerifier { slash_amount_mod } => {
+                if bond_active && model.bond_remaining > 0 {
+                    let slash_amount = (slash_amount_mod as i128 % 200)
+                        .max(1)
+                        .min(model.bond_remaining);
+                    if client
+                        .try_slash_verifier(&bonded_verifier, &campaign_id, &slash_amount)
+                        .is_ok()
+                    {
+                        model.bond_remaining -= slash_amount;
+                        let c = client.get_campaign(&campaign_id);
+                        model.raised = c.raised;
+                    }
+                }
+            }
         }
 
         // ── Check all invariants after every step ───────────────────────────
         model.check_invariants();
 
-        // Invariant 8: Completed/Cancelled campaign blocks new donations.
+        // Accounting invariant: contract token balance holds campaign escrow,
+        // unreturned sponsor pool, and active verifier bond.
+        let contract_balance = token_client.balance(&contract_id);
+        assert!(
+            contract_balance >= 0,
+            "contract balance < 0: {}",
+            contract_balance
+        );
+
+        let sponsor_hold = if sponsor_pool_active {
+            model.sponsor_remaining
+        } else {
+            0
+        };
+        let bond_hold = if bond_active {
+            model.bond_remaining
+        } else {
+            0
+        };
+        let campaign_escrow = (model.raised - model.released - total_refunded).max(0);
+        let expected_balance = campaign_escrow + sponsor_hold + bond_hold;
+
+        assert!(
+            contract_balance <= expected_balance + 100, // +100 for integer division dust
+            "contract_balance {} > expected {} + 100 (raised={} released={} refunded={} sponsor_hold={} bond_hold={})",
+            contract_balance,
+            expected_balance,
+            model.raised,
+            model.released,
+            total_refunded,
+            sponsor_hold,
+            bond_hold,
+        );
+
+        // Invariant 9: Completed/Cancelled campaign blocks new donations.
         if model.status == CampaignStatus::Completed || model.status == CampaignStatus::Cancelled {
             assert!(
                 client.try_donate(&donor_a, &campaign_id, &1).is_err(),
@@ -381,30 +536,4 @@ fuzz_target!(|data: &[u8]| {
             );
         }
     }
-
-    // ── Final balance invariant ──────────────────────────────────────────────
-    // After all ops, the contract's token balance must equal raised - released
-    // (some may remain as dust from integer truncation, but must be >= 0).
-    let contract_balance = token_client.balance(&contract_id);
-    let expected_min = model.raised - model.released;
-    assert!(
-        contract_balance >= 0,
-        "contract balance < 0: {}",
-        contract_balance
-    );
-    // Allow for sponsor pool funds still held (if pool is still active).
-    let sponsor_hold = if sponsor_pool_active {
-        model.sponsor_remaining
-    } else {
-        0
-    };
-    assert!(
-        contract_balance <= expected_min + sponsor_hold + 100, // +100 for rounding dust
-        "contract_balance {} > expected {} (raised={} released={} sponsor_hold={})",
-        contract_balance,
-        expected_min + sponsor_hold,
-        model.raised,
-        model.released,
-        sponsor_hold,
-    );
 });
