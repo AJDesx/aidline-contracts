@@ -4,10 +4,10 @@ use crate::errors::Error;
 use crate::types::{Campaign, DataKey, Pledge, SponsorPool, VerifierBond};
 
 const DAY_IN_LEDGERS: u32 = 17_280;
-const INSTANCE_BUMP: u32 = 30 * DAY_IN_LEDGERS;
-const INSTANCE_THRESHOLD: u32 = INSTANCE_BUMP - DAY_IN_LEDGERS;
-const PERSISTENT_BUMP: u32 = 120 * DAY_IN_LEDGERS;
-const PERSISTENT_THRESHOLD: u32 = PERSISTENT_BUMP - 7 * DAY_IN_LEDGERS;
+pub(crate) const INSTANCE_BUMP: u32 = 30 * DAY_IN_LEDGERS;
+pub(crate) const INSTANCE_THRESHOLD: u32 = INSTANCE_BUMP - DAY_IN_LEDGERS;
+pub(crate) const PERSISTENT_BUMP: u32 = 120 * DAY_IN_LEDGERS;
+pub(crate) const PERSISTENT_THRESHOLD: u32 = PERSISTENT_BUMP - 7 * DAY_IN_LEDGERS;
 
 pub fn bump_instance(env: &Env) {
     env.storage()
@@ -73,7 +73,13 @@ pub fn campaign_count(env: &Env) -> u64 {
 
 pub fn is_verifier(env: &Env, who: &Address) -> bool {
     let key = DataKey::Verifier(who.clone());
-    env.storage().persistent().get(&key).unwrap_or(false)
+    let registered: Option<bool> = env.storage().persistent().get(&key);
+    // Reads keep the registration alive, so a verifier that is still in use is
+    // never silently dropped when its entry would otherwise expire (#110).
+    if registered.is_some() {
+        bump(env, &key);
+    }
+    registered.unwrap_or(false)
 }
 
 pub fn set_verifier(env: &Env, who: &Address, active: bool) {
@@ -100,6 +106,10 @@ pub fn set_verifier_profile(env: &Env, who: &Address, uri: &String) {
 }
 
 pub fn campaign(env: &Env, id: u64) -> Result<Campaign, Error> {
+    // Every campaign call passes through here, so this is what keeps the
+    // instance entry (admin, token, counters, fees) alive on a deployment that
+    // is busy but creates no new campaigns (#110).
+    bump_instance(env);
     let key = DataKey::Campaign(id);
     let campaign = env
         .storage()
@@ -128,7 +138,11 @@ pub fn save_campaign(env: &Env, campaign: &Campaign) {
 
 pub fn contribution(env: &Env, id: u64, donor: &Address) -> i128 {
     let key = DataKey::Contribution(id, donor.clone());
-    env.storage().persistent().get(&key).unwrap_or(0)
+    let amount: Option<i128> = env.storage().persistent().get(&key);
+    if amount.is_some() {
+        bump(env, &key);
+    }
+    amount.unwrap_or(0)
 }
 
 pub fn set_contribution(env: &Env, id: u64, donor: &Address, amount: i128) {
@@ -308,7 +322,11 @@ pub fn save_milestone_approvals(
 
 pub fn is_token_allowed(env: &Env, token: &Address) -> bool {
     let key = DataKey::AllowedToken(token.clone());
-    env.storage().persistent().get(&key).unwrap_or(false)
+    let allowed: Option<bool> = env.storage().persistent().get(&key);
+    if allowed.is_some() {
+        bump(env, &key);
+    }
+    allowed.unwrap_or(false)
 }
 
 pub fn set_token_allowed(env: &Env, token: &Address, allowed: bool) {
