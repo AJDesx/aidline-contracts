@@ -77,4 +77,7 @@ pub enum Error {
 
     // Milestone approval cooldown
     ApprovalCooldownNotMet = 41,
+
+    // Milestone due date
+    MilestoneOverdue = 42,
 }

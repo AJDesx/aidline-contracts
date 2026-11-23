@@ -519,6 +519,8 @@ impl Aidline {
     /// - [`Error::BondNotFound`]: no bond record exists for `verifier`.
     /// - [`Error::BondNotWithdrawable`]: bond has already been withdrawn.
     /// - [`Error::SlashExceedsBond`]: `slash_amount` exceeds remaining bond.
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    /// - [`Error::CampaignNotActive`]: campaign is completed.
     pub fn slash_verifier(
         env: Env,
         verifier: Address,
@@ -540,23 +542,25 @@ impl Aidline {
             return Err(Error::SlashExceedsBond);
         }
 
+        let mut campaign = storage::campaign(&env, campaign_id)?;
+        if campaign.status == CampaignStatus::Completed {
+            return Err(Error::CampaignNotActive);
+        }
+
         bond.remaining -= slash_amount;
         if bond.remaining == 0 {
             bond.status = BondStatus::Slashed;
         }
         storage::save_verifier_bond(&env, &bond);
 
-        let campaign_result = storage::campaign(&env, campaign_id);
-        if let Ok(mut campaign) = campaign_result {
-            let contract_addr = env.current_contract_address();
-            let prev = storage::contribution(&env, campaign_id, &contract_addr);
-            campaign.raised = campaign
-                .raised
-                .checked_add(slash_amount)
-                .unwrap_or(campaign.raised);
-            storage::save_campaign(&env, &campaign);
-            storage::set_contribution(&env, campaign_id, &contract_addr, prev + slash_amount);
-        }
+        let contract_addr = env.current_contract_address();
+        let prev = storage::contribution(&env, campaign_id, &contract_addr);
+        campaign.raised = campaign
+            .raised
+            .checked_add(slash_amount)
+            .unwrap_or(campaign.raised);
+        storage::save_campaign(&env, &campaign);
+        storage::set_contribution(&env, campaign_id, &contract_addr, prev + slash_amount);
 
         BondSlashed {
             verifier: verifier.clone(),
@@ -860,6 +864,11 @@ impl Aidline {
     }
 
     /// Creates a campaign with per-milestone due dates.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidMilestones`]: `milestone_due_dates` length does not match
+    ///   `milestones` length, or due dates are not strictly monotonically increasing.
+    /// - [`Error::DeadlineInPast`]: a milestone due date is not in the future.
     pub fn create_campaign_with_due_dates(
         env: Env,
         creator: Address,
@@ -872,6 +881,22 @@ impl Aidline {
         milestones: Vec<i128>,
         milestone_due_dates: Vec<u64>,
     ) -> Result<u64, Error> {
+        if milestone_due_dates.len() != milestones.len() {
+            return Err(Error::InvalidMilestones);
+        }
+
+        let now = env.ledger().timestamp();
+        let mut prev_due = 0u64;
+        for (i, due_date) in milestone_due_dates.iter().enumerate() {
+            if due_date <= now {
+                return Err(Error::DeadlineInPast);
+            }
+            if i > 0 && due_date <= prev_due {
+                return Err(Error::InvalidMilestones);
+            }
+            prev_due = due_date;
+        }
+
         let id = Self::create_campaign(
             env.clone(),
             creator,
@@ -881,11 +906,8 @@ impl Aidline {
             kind,
             metadata_uri,
             deadline,
-            milestones.clone(),
+            milestones,
         )?;
-        if milestone_due_dates.len() != milestones.len() {
-            return Err(Error::InvalidMilestones);
-        }
         storage::set_milestone_due_dates(&env, id, &milestone_due_dates);
         Ok(id)
     }
@@ -992,6 +1014,7 @@ impl Aidline {
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
     /// - [`Error::CampaignNotActive`]: campaign is not in `Active` status.
     /// - [`Error::CampaignExpired`]: campaign deadline has passed.
+    /// - [`Error::MilestoneOverdue`]: a milestone is overdue.
     /// - [`Error::GoalExceeded`]: campaign is already fully funded.
     pub fn donate(env: Env, donor: Address, campaign_id: u64, amount: i128) -> Result<i128, Error> {
         donor.require_auth();
@@ -1056,7 +1079,7 @@ impl Aidline {
     /// - [`Error::InvalidMatchingConfig`]: `ratio_bps` is 0 or above 10 000,
     ///   `cap` or `amount` are non-positive, or `amount != cap`.
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
-    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`]: campaign
+    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`] / [`Error::MilestoneOverdue`]: campaign
     ///   is not open.
     /// - [`Error::SponsorPoolExists`]: a pool for this sponsor and campaign
     ///   already exists.
@@ -1131,7 +1154,7 @@ impl Aidline {
     /// - [`Error::SponsorPoolNotFound`]: no pool exists for this sponsor and
     ///   campaign.
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
-    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`]: campaign
+    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`] / [`Error::MilestoneOverdue`]: campaign
     ///   is not open.
     pub fn apply_matching(
         env: Env,
@@ -1262,7 +1285,7 @@ impl Aidline {
     /// - [`Error::InvalidPledge`]: `pledged_amount` is zero or negative, or
     ///   the donor's current token allowance is below `pledged_amount`.
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
-    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`]: campaign
+    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`] / [`Error::MilestoneOverdue`]: campaign
     ///   is not open.
     pub fn create_pledge(
         env: Env,
@@ -1754,6 +1777,12 @@ impl Aidline {
             return Err(Error::RefundNotAvailable);
         }
 
+        if !ended && is_overdue {
+            campaign.status = CampaignStatus::Cancelled;
+            storage::save_campaign(env, &campaign);
+            CampaignCancelled { campaign_id }.publish(env);
+        }
+
         let contributed = storage::contribution(env, campaign_id, donor);
         if contributed == 0 {
             return Err(Error::NothingToRefund);
@@ -1769,13 +1798,6 @@ impl Aidline {
                 donor,
                 &amount,
             );
-        }
-
-        if !ended {
-            let released_portion = contributed - amount;
-            campaign.raised -= contributed;
-            campaign.released -= released_portion;
-            storage::save_campaign(env, &campaign);
         }
 
         Refunded {
@@ -2088,6 +2110,9 @@ impl Aidline {
         }
         if Self::is_expired(env, campaign) {
             return Err(Error::CampaignExpired);
+        }
+        if Self::is_overdue(env, campaign) {
+            return Err(Error::MilestoneOverdue);
         }
         Ok(())
     }
