@@ -2615,6 +2615,102 @@ fn test_view_milestone_due_dates() {
 }
 
 #[test]
+fn create_campaign_with_due_dates_validates_future_and_monotonicity() {
+    let s = Setup::new();
+    let now = s.env.ledger().timestamp();
+    let milestones = vec![&s.env, 300, 700];
+
+    let count_before = s.client.campaign_count();
+
+    // 1. Due date in the past fails with DeadlineInPast
+    let past_dates = vec![&s.env, now - 10, now + 100];
+    assert_eq!(
+        s.client.try_create_campaign_with_due_dates(
+            &s.creator,
+            &s.beneficiary,
+            &s.verifier,
+            &s.token.address,
+            &CampaignKind::Emergency,
+            &String::from_str(&s.env, "ipfs://past-due"),
+            &(now + 30 * DAY),
+            &milestones,
+            &past_dates,
+        ),
+        Err(Ok(Error::DeadlineInPast))
+    );
+
+    // 2. Due date equal to current timestamp fails with DeadlineInPast
+    let now_dates = vec![&s.env, now, now + 100];
+    assert_eq!(
+        s.client.try_create_campaign_with_due_dates(
+            &s.creator,
+            &s.beneficiary,
+            &s.verifier,
+            &s.token.address,
+            &CampaignKind::Emergency,
+            &String::from_str(&s.env, "ipfs://now-due"),
+            &(now + 30 * DAY),
+            &milestones,
+            &now_dates,
+        ),
+        Err(Ok(Error::DeadlineInPast))
+    );
+
+    // 3. Non-monotonic due dates fail with InvalidMilestones (decreasing)
+    let decreasing_dates = vec![&s.env, now + 100, now + 50];
+    assert_eq!(
+        s.client.try_create_campaign_with_due_dates(
+            &s.creator,
+            &s.beneficiary,
+            &s.verifier,
+            &s.token.address,
+            &CampaignKind::Emergency,
+            &String::from_str(&s.env, "ipfs://dec-due"),
+            &(now + 30 * DAY),
+            &milestones,
+            &decreasing_dates,
+        ),
+        Err(Ok(Error::InvalidMilestones))
+    );
+
+    // 4. Equal consecutive due dates fail with InvalidMilestones
+    let equal_dates = vec![&s.env, now + 100, now + 100];
+    assert_eq!(
+        s.client.try_create_campaign_with_due_dates(
+            &s.creator,
+            &s.beneficiary,
+            &s.verifier,
+            &s.token.address,
+            &CampaignKind::Emergency,
+            &String::from_str(&s.env, "ipfs://equal-due"),
+            &(now + 30 * DAY),
+            &milestones,
+            &equal_dates,
+        ),
+        Err(Ok(Error::InvalidMilestones))
+    );
+
+    // Verify campaign was not created on validation failures
+    assert_eq!(s.client.campaign_count(), count_before);
+
+    // 5. Valid future monotonic due dates succeed
+    let valid_dates = vec![&s.env, now + 100, now + 200];
+    let res = s.client.create_campaign_with_due_dates(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Emergency,
+        &String::from_str(&s.env, "ipfs://valid-due"),
+        &(now + 30 * DAY),
+        &milestones,
+        &valid_dates,
+    );
+    assert_eq!(s.client.campaign_count(), count_before + 1);
+    assert_eq!(s.client.milestone_due_dates(&res), valid_dates);
+}
+
+#[test]
 fn test_view_is_verifier() {
     let s = Setup::new();
     let candidate = Address::generate(&s.env);

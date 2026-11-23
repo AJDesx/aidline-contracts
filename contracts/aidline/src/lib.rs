@@ -864,6 +864,11 @@ impl Aidline {
     }
 
     /// Creates a campaign with per-milestone due dates.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidMilestones`]: `milestone_due_dates` length does not match
+    ///   `milestones` length, or due dates are not strictly monotonically increasing.
+    /// - [`Error::DeadlineInPast`]: a milestone due date is not in the future.
     pub fn create_campaign_with_due_dates(
         env: Env,
         creator: Address,
@@ -876,6 +881,22 @@ impl Aidline {
         milestones: Vec<i128>,
         milestone_due_dates: Vec<u64>,
     ) -> Result<u64, Error> {
+        if milestone_due_dates.len() != milestones.len() {
+            return Err(Error::InvalidMilestones);
+        }
+
+        let now = env.ledger().timestamp();
+        let mut prev_due = 0u64;
+        for (i, due_date) in milestone_due_dates.iter().enumerate() {
+            if due_date <= now {
+                return Err(Error::DeadlineInPast);
+            }
+            if i > 0 && due_date <= prev_due {
+                return Err(Error::InvalidMilestones);
+            }
+            prev_due = due_date;
+        }
+
         let id = Self::create_campaign(
             env.clone(),
             creator,
@@ -885,11 +906,8 @@ impl Aidline {
             kind,
             metadata_uri,
             deadline,
-            milestones.clone(),
+            milestones,
         )?;
-        if milestone_due_dates.len() != milestones.len() {
-            return Err(Error::InvalidMilestones);
-        }
         storage::set_milestone_due_dates(&env, id, &milestone_due_dates);
         Ok(id)
     }
