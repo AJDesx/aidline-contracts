@@ -996,6 +996,7 @@ impl Aidline {
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
     /// - [`Error::CampaignNotActive`]: campaign is not in `Active` status.
     /// - [`Error::CampaignExpired`]: campaign deadline has passed.
+    /// - [`Error::MilestoneOverdue`]: a milestone is overdue.
     /// - [`Error::GoalExceeded`]: campaign is already fully funded.
     pub fn donate(env: Env, donor: Address, campaign_id: u64, amount: i128) -> Result<i128, Error> {
         donor.require_auth();
@@ -1060,7 +1061,7 @@ impl Aidline {
     /// - [`Error::InvalidMatchingConfig`]: `ratio_bps` is 0 or above 10 000,
     ///   `cap` or `amount` are non-positive, or `amount != cap`.
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
-    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`]: campaign
+    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`] / [`Error::MilestoneOverdue`]: campaign
     ///   is not open.
     /// - [`Error::SponsorPoolExists`]: a pool for this sponsor and campaign
     ///   already exists.
@@ -1135,7 +1136,7 @@ impl Aidline {
     /// - [`Error::SponsorPoolNotFound`]: no pool exists for this sponsor and
     ///   campaign.
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
-    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`]: campaign
+    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`] / [`Error::MilestoneOverdue`]: campaign
     ///   is not open.
     pub fn apply_matching(
         env: Env,
@@ -1266,7 +1267,7 @@ impl Aidline {
     /// - [`Error::InvalidPledge`]: `pledged_amount` is zero or negative, or
     ///   the donor's current token allowance is below `pledged_amount`.
     /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
-    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`]: campaign
+    /// - [`Error::CampaignNotActive`] / [`Error::CampaignExpired`] / [`Error::MilestoneOverdue`]: campaign
     ///   is not open.
     pub fn create_pledge(
         env: Env,
@@ -2092,6 +2093,9 @@ impl Aidline {
         }
         if Self::is_expired(env, campaign) {
             return Err(Error::CampaignExpired);
+        }
+        if Self::is_overdue(env, campaign) {
+            return Err(Error::MilestoneOverdue);
         }
         Ok(())
     }

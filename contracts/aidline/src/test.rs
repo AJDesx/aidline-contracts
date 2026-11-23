@@ -908,6 +908,64 @@ fn due_date_refunds_do_not_cancel_campaign() {
     assert_eq!(c2.released, 0);
 }
 
+#[test]
+fn overdue_milestone_blocks_new_donations_sponsor_pools_and_pledges() {
+    let s = Setup::new();
+    let env = &s.env;
+
+    let now = env.ledger().timestamp();
+    let due_dates = vec![env, now + 10 * DAY, now + 20 * DAY];
+    let milestones = vec![env, 300, 700];
+
+    let id = s.client.create_campaign_with_due_dates(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Emergency,
+        &String::from_str(env, "ipfs://due-dates-overdue"),
+        &(now + 30 * DAY),
+        &milestones,
+        &due_dates,
+    );
+
+    let donor_a = s.donor(500);
+    let donor_b = s.donor(500);
+    let sponsor = s.donor(1_000);
+    let pledger = s.donor(500);
+
+    // Initial donation succeeds before milestone is overdue
+    s.client.donate(&donor_a, &id, &200);
+
+    // Advance time past milestone 0 due date
+    env.ledger().set_timestamp(now + 11 * DAY);
+
+    // New donation fails with MilestoneOverdue
+    assert_eq!(
+        s.client.try_donate(&donor_b, &id, &200),
+        Err(Ok(Error::MilestoneOverdue))
+    );
+
+    // Deposit sponsor pool fails with MilestoneOverdue
+    assert_eq!(
+        s.client
+            .try_deposit_sponsor_pool(&sponsor, &id, &1_000, &500, &500),
+        Err(Ok(Error::MilestoneOverdue))
+    );
+
+    // Create pledge fails with MilestoneOverdue
+    let expiry = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&pledger, &s.client.address, &500, &expiry);
+    assert_eq!(
+        s.client.try_create_pledge(&pledger, &id, &500),
+        Err(Ok(Error::MilestoneOverdue))
+    );
+
+    // Existing donor can still refund
+    let refunded = s.client.refund(&donor_a, &id);
+    assert_eq!(refunded, 200);
+}
+
 // ─── Issue #2 Tests: AdminChanged event ──────────────────────────────────────
 
 #[test]
