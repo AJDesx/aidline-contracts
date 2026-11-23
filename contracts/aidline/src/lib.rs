@@ -519,6 +519,8 @@ impl Aidline {
     /// - [`Error::BondNotFound`]: no bond record exists for `verifier`.
     /// - [`Error::BondNotWithdrawable`]: bond has already been withdrawn.
     /// - [`Error::SlashExceedsBond`]: `slash_amount` exceeds remaining bond.
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    /// - [`Error::CampaignNotActive`]: campaign is completed.
     pub fn slash_verifier(
         env: Env,
         verifier: Address,
@@ -540,23 +542,25 @@ impl Aidline {
             return Err(Error::SlashExceedsBond);
         }
 
+        let mut campaign = storage::campaign(&env, campaign_id)?;
+        if campaign.status == CampaignStatus::Completed {
+            return Err(Error::CampaignNotActive);
+        }
+
         bond.remaining -= slash_amount;
         if bond.remaining == 0 {
             bond.status = BondStatus::Slashed;
         }
         storage::save_verifier_bond(&env, &bond);
 
-        let campaign_result = storage::campaign(&env, campaign_id);
-        if let Ok(mut campaign) = campaign_result {
-            let contract_addr = env.current_contract_address();
-            let prev = storage::contribution(&env, campaign_id, &contract_addr);
-            campaign.raised = campaign
-                .raised
-                .checked_add(slash_amount)
-                .unwrap_or(campaign.raised);
-            storage::save_campaign(&env, &campaign);
-            storage::set_contribution(&env, campaign_id, &contract_addr, prev + slash_amount);
-        }
+        let contract_addr = env.current_contract_address();
+        let prev = storage::contribution(&env, campaign_id, &contract_addr);
+        campaign.raised = campaign
+            .raised
+            .checked_add(slash_amount)
+            .unwrap_or(campaign.raised);
+        storage::save_campaign(&env, &campaign);
+        storage::set_contribution(&env, campaign_id, &contract_addr, prev + slash_amount);
 
         BondSlashed {
             verifier: verifier.clone(),

@@ -1494,6 +1494,42 @@ fn a_withdrawn_bond_cannot_be_slashed() {
     );
 }
 
+#[test]
+fn slashing_completed_campaign_fails_and_does_not_deduct_bond() {
+    let s = Setup::new();
+    let v = s.bonded_verifier(1_000, 400);
+    let id = s.campaign();
+    let donor = s.donor(1_000);
+
+    s.client.donate(&donor, &id, &1_000);
+    s.client.approve_milestone(&id, &s.proof());
+    s.client.approve_milestone(&id, &s.proof());
+    s.client.approve_milestone(&id, &s.proof());
+
+    assert_eq!(s.client.get_campaign(&id).status, CampaignStatus::Completed);
+
+    assert_eq!(
+        s.client.try_slash_verifier(&v, &id, &150),
+        Err(Ok(Error::CampaignNotActive))
+    );
+
+    // Verify bond is not deducted
+    let bond = s.client.get_verifier_bond(&v).unwrap();
+    assert_eq!(bond.remaining, 400);
+
+    // Slashing a cancelled campaign succeeds
+    let id_cancelled = s.campaign();
+    s.client.cancel_campaign(&s.creator, &id_cancelled);
+    assert_eq!(
+        s.client.get_campaign(&id_cancelled).status,
+        CampaignStatus::Cancelled
+    );
+    s.client.slash_verifier(&v, &id_cancelled, &100);
+    let bond_after = s.client.get_verifier_bond(&v).unwrap();
+    assert_eq!(bond_after.remaining, 300);
+    assert_eq!(s.client.get_campaign(&id_cancelled).raised, 100);
+}
+
 // ─── Sponsor matching pools (issue #27) ───────────────────────────────────────
 
 #[test]
