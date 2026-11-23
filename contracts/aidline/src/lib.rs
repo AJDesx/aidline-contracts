@@ -1759,6 +1759,12 @@ impl Aidline {
             return Err(Error::RefundNotAvailable);
         }
 
+        if !ended && is_overdue {
+            campaign.status = CampaignStatus::Cancelled;
+            storage::save_campaign(env, &campaign);
+            CampaignCancelled { campaign_id }.publish(env);
+        }
+
         let contributed = storage::contribution(env, campaign_id, donor);
         if contributed == 0 {
             return Err(Error::NothingToRefund);
@@ -1774,13 +1780,6 @@ impl Aidline {
                 donor,
                 &amount,
             );
-        }
-
-        if !ended {
-            let released_portion = contributed - amount;
-            campaign.raised -= contributed;
-            campaign.released -= released_portion;
-            storage::save_campaign(env, &campaign);
         }
 
         Refunded {

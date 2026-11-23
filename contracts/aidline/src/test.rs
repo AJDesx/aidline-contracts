@@ -896,16 +896,85 @@ fn due_date_refunds_do_not_cancel_campaign() {
     assert_eq!(refund_a, 350); // 500 * 700 / 1000
 
     let c = s.client.get_campaign(&id);
-    assert_eq!(c.status, CampaignStatus::Active); // still active!
-    assert_eq!(c.raised, 500); // 1000 - 500
-    assert_eq!(c.released, 150); // 300 - 150
+    assert_eq!(c.status, CampaignStatus::Cancelled);
+    assert_eq!(c.raised, 1000);
+    assert_eq!(c.released, 300);
 
     let refund_b = s.client.refund(&donor_b, &id);
     assert_eq!(refund_b, 350);
 
     let c2 = s.client.get_campaign(&id);
-    assert_eq!(c2.raised, 0);
-    assert_eq!(c2.released, 0);
+    assert_eq!(c2.status, CampaignStatus::Cancelled);
+    assert_eq!(c2.raised, 1000);
+    assert_eq!(c2.released, 300);
+
+    assert_eq!(
+        s.client.try_approve_milestone(&id, &s.proof()),
+        Err(Ok(Error::CampaignNotActive))
+    );
+}
+
+#[test]
+fn overdue_refunds_path_independent_with_three_donors() {
+    let s = Setup::new();
+    let env = &s.env;
+
+    let now = env.ledger().timestamp();
+    let due_dates = vec![env, now + 10 * DAY, now + 20 * DAY];
+    let milestones = vec![env, 300, 700];
+
+    let id = s.client.create_campaign_with_due_dates(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Emergency,
+        &String::from_str(env, "ipfs://asymm-refunds"),
+        &(now + 30 * DAY),
+        &milestones,
+        &due_dates,
+    );
+
+    let donor_a = s.donor(200);
+    let donor_b = s.donor(300);
+    let donor_c = s.donor(500);
+
+    s.client.donate(&donor_a, &id, &200);
+    s.client.donate(&donor_b, &id, &300);
+    s.client.donate(&donor_c, &id, &500);
+
+    s.client.approve_milestone(&id, &s.proof()); // 300 released
+
+    // Advance time past milestone 1 due date
+    env.ledger().set_timestamp(now + 21 * DAY);
+
+    // Donor C refunds first
+    let refund_c = s.client.refund(&donor_c, &id);
+    assert_eq!(refund_c, 350); // 500 * 700 / 1000
+
+    // Campaign transitioned to Cancelled and totals remain immutable
+    let c = s.client.get_campaign(&id);
+    assert_eq!(c.status, CampaignStatus::Cancelled);
+    assert_eq!(c.raised, 1000);
+    assert_eq!(c.released, 300);
+
+    // Donor A refunds second
+    let refund_a = s.client.refund(&donor_a, &id);
+    assert_eq!(refund_a, 140); // 200 * 700 / 1000
+
+    // Donor B refunds third
+    let refund_b = s.client.refund(&donor_b, &id);
+    assert_eq!(refund_b, 210); // 300 * 700 / 1000
+
+    // Sum of all refunds equals raised - released
+    assert_eq!(refund_a + refund_b + refund_c, 700);
+    assert_eq!(refund_a + refund_b + refund_c + c.released, c.raised);
+
+    // approve_milestone is rejected on cancelled campaign
+    assert_eq!(
+        s.client.try_approve_milestone(&id, &s.proof()),
+        Err(Ok(Error::CampaignNotActive))
+    );
 }
 
 #[test]
