@@ -660,6 +660,32 @@ fn missing_campaign_errors() {
 // ─── Issue #23 Tests: Emergency fast track ────────────────────────────────────
 
 #[test]
+fn emergency_fast_track_cap_overflow_returns_invalid_amount() {
+    let s = Setup::new();
+    let large_goal = i128::MAX / 1000;
+    let milestones = vec![&s.env, large_goal];
+    let id = s.client.create_campaign(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Emergency,
+        &String::from_str(&s.env, "ipfs://overflow-goal"),
+        &(s.env.ledger().timestamp() + 30 * DAY),
+        &milestones,
+    );
+
+    let donor = s.donor(1_000);
+    s.client.donate(&donor, &id, &500);
+
+    // Calling emergency_fast_track with an extreme goal overflows cap calculation and returns InvalidAmount
+    assert_eq!(
+        s.client.try_emergency_fast_track(&id),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
 fn emergency_fast_track_works_for_emergency_campaign() {
     let s = Setup::new();
     let id = s.campaign(); // Goal 1000

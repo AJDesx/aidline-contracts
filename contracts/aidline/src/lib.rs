@@ -1389,6 +1389,7 @@ impl Aidline {
     /// - [`Error::AdvanceAlreadyTaken`]: the fast-track has already been used
     ///   on this campaign.
     /// - [`Error::AdvanceExceedsEscrow`]: no funds are currently in escrow.
+    /// - [`Error::InvalidAmount`]: emergency advance cap calculation overflows.
     pub fn emergency_fast_track(env: Env, campaign_id: u64) -> Result<i128, Error> {
         let mut campaign = storage::campaign(&env, campaign_id)?;
         campaign.verifier.require_auth();
@@ -1412,7 +1413,11 @@ impl Aidline {
         }
 
         // Cap: 20% of goal, rounded down (favors the contract, never exceeds).
-        let cap = campaign.goal * EMERGENCY_ADVANCE_BPS / BPS_DENOM;
+        let cap = campaign
+            .goal
+            .checked_mul(EMERGENCY_ADVANCE_BPS)
+            .ok_or(Error::InvalidAmount)?
+            / BPS_DENOM;
 
         // Available escrow = raised − already released.
         let available = campaign.raised - campaign.released;
