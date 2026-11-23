@@ -46,6 +46,8 @@ const MAX_PLATFORM_FEE_BPS: u32 = 200;
 const SKIP_REASON_NO_ALLOWANCE: u32 = 1;
 /// Reason code emitted in PledgeSkipped when the pledge is fully consumed.
 const SKIP_REASON_EXHAUSTED: u32 = 2;
+/// Reason code emitted in PledgeSkipped when multiplication overflows.
+const SKIP_REASON_OVERFLOW: u32 = 3;
 
 /// Maximum duration (in seconds) for a one-time deadline extension (30 days).
 const MAX_DEADLINE_EXTENSION: u64 = 30 * 86_400;
@@ -2182,10 +2184,20 @@ impl Aidline {
             let pledge_remaining = pledge.pledged_amount - pledge.pulled_amount;
 
             // Proportional share: milestone_amount * pledge_remaining / total_remaining.
-            let share = milestone_amount
-                .checked_mul(pledge_remaining)
-                .unwrap_or(i128::MAX)
-                / total_remaining;
+            let numerator = match milestone_amount.checked_mul(pledge_remaining) {
+                Some(n) => n,
+                None => {
+                    PledgeSkipped {
+                        pledge_id: pledge.pledge_id,
+                        campaign_id,
+                        donor: pledge.donor.clone(),
+                        reason: SKIP_REASON_OVERFLOW,
+                    }
+                    .publish(env);
+                    continue;
+                }
+            };
+            let share = numerator / total_remaining;
 
             if share <= 0 {
                 PledgeSkipped {
