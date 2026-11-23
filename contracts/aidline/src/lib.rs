@@ -1792,8 +1792,15 @@ impl Aidline {
             return Err(Error::NothingToRefund);
         }
 
+        if campaign.raised == 0 {
+            return Err(Error::InvalidAmount);
+        }
+
         let unreleased = campaign.raised - campaign.released;
-        let amount = contributed * unreleased / campaign.raised;
+        let numerator = contributed
+            .checked_mul(unreleased)
+            .ok_or(Error::InvalidAmount)?;
+        let amount = numerator / campaign.raised;
 
         storage::set_contribution(env, campaign_id, donor, 0);
         if amount > 0 {
@@ -2020,7 +2027,10 @@ impl Aidline {
         if unreleased <= 0 {
             return 0;
         }
-        contributed * unreleased / campaign.raised
+        let Some(numerator) = contributed.checked_mul(unreleased) else {
+            return 0;
+        };
+        numerator / campaign.raised
     }
 
     /// Returns `true` if `who` is currently a registered verifier.
