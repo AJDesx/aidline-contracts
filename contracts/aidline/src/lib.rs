@@ -867,7 +867,8 @@ impl Aidline {
     ///
     /// # Errors
     /// - [`Error::InvalidMilestones`]: `milestone_due_dates` length does not match
-    ///   `milestones` length, or due dates are not strictly monotonically increasing.
+    ///   `milestones` length, due dates are not strictly monotonically increasing,
+    ///   or a due date exceeds `deadline`.
     /// - [`Error::DeadlineInPast`]: a milestone due date is not in the future.
     pub fn create_campaign_with_due_dates(
         env: Env,
@@ -892,6 +893,9 @@ impl Aidline {
                 return Err(Error::DeadlineInPast);
             }
             if i > 0 && due_date <= prev_due {
+                return Err(Error::InvalidMilestones);
+            }
+            if due_date > deadline {
                 return Err(Error::InvalidMilestones);
             }
             prev_due = due_date;
