@@ -46,6 +46,8 @@ const MAX_PLATFORM_FEE_BPS: u32 = 200;
 const SKIP_REASON_NO_ALLOWANCE: u32 = 1;
 /// Reason code emitted in PledgeSkipped when the pledge is fully consumed.
 const SKIP_REASON_EXHAUSTED: u32 = 2;
+/// Reason code emitted in PledgeSkipped when multiplication overflows.
+const SKIP_REASON_OVERFLOW: u32 = 3;
 
 /// Maximum duration (in seconds) for a one-time deadline extension (30 days).
 const MAX_DEADLINE_EXTENSION: u64 = 30 * 86_400;
@@ -867,7 +869,8 @@ impl Aidline {
     ///
     /// # Errors
     /// - [`Error::InvalidMilestones`]: `milestone_due_dates` length does not match
-    ///   `milestones` length, or due dates are not strictly monotonically increasing.
+    ///   `milestones` length, due dates are not strictly monotonically increasing,
+    ///   or a due date exceeds `deadline`.
     /// - [`Error::DeadlineInPast`]: a milestone due date is not in the future.
     pub fn create_campaign_with_due_dates(
         env: Env,
@@ -892,6 +895,9 @@ impl Aidline {
                 return Err(Error::DeadlineInPast);
             }
             if i > 0 && due_date <= prev_due {
+                return Err(Error::InvalidMilestones);
+            }
+            if due_date > deadline {
                 return Err(Error::InvalidMilestones);
             }
             prev_due = due_date;
@@ -1383,6 +1389,7 @@ impl Aidline {
     /// - [`Error::AdvanceAlreadyTaken`]: the fast-track has already been used
     ///   on this campaign.
     /// - [`Error::AdvanceExceedsEscrow`]: no funds are currently in escrow.
+    /// - [`Error::InvalidAmount`]: emergency advance cap calculation overflows.
     pub fn emergency_fast_track(env: Env, campaign_id: u64) -> Result<i128, Error> {
         let mut campaign = storage::campaign(&env, campaign_id)?;
         campaign.verifier.require_auth();
@@ -1406,7 +1413,11 @@ impl Aidline {
         }
 
         // Cap: 20% of goal, rounded down (favors the contract, never exceeds).
-        let cap = campaign.goal * EMERGENCY_ADVANCE_BPS / BPS_DENOM;
+        let cap = campaign
+            .goal
+            .checked_mul(EMERGENCY_ADVANCE_BPS)
+            .ok_or(Error::InvalidAmount)?
+            / BPS_DENOM;
 
         // Available escrow = raised − already released.
         let available = campaign.raised - campaign.released;
@@ -1788,8 +1799,15 @@ impl Aidline {
             return Err(Error::NothingToRefund);
         }
 
+        if campaign.raised == 0 {
+            return Err(Error::InvalidAmount);
+        }
+
         let unreleased = campaign.raised - campaign.released;
-        let amount = contributed * unreleased / campaign.raised;
+        let numerator = contributed
+            .checked_mul(unreleased)
+            .ok_or(Error::InvalidAmount)?;
+        let amount = numerator / campaign.raised;
 
         storage::set_contribution(env, campaign_id, donor, 0);
         if amount > 0 {
@@ -2016,7 +2034,10 @@ impl Aidline {
         if unreleased <= 0 {
             return 0;
         }
-        contributed * unreleased / campaign.raised
+        let Some(numerator) = contributed.checked_mul(unreleased) else {
+            return 0;
+        };
+        numerator / campaign.raised
     }
 
     /// Returns `true` if `who` is currently a registered verifier.
@@ -2168,10 +2189,20 @@ impl Aidline {
             let pledge_remaining = pledge.pledged_amount - pledge.pulled_amount;
 
             // Proportional share: milestone_amount * pledge_remaining / total_remaining.
-            let share = milestone_amount
-                .checked_mul(pledge_remaining)
-                .unwrap_or(i128::MAX)
-                / total_remaining;
+            let numerator = match milestone_amount.checked_mul(pledge_remaining) {
+                Some(n) => n,
+                None => {
+                    PledgeSkipped {
+                        pledge_id: pledge.pledge_id,
+                        campaign_id,
+                        donor: pledge.donor.clone(),
+                        reason: SKIP_REASON_OVERFLOW,
+                    }
+                    .publish(env);
+                    continue;
+                }
+            };
+            let share = numerator / total_remaining;
 
             if share <= 0 {
                 PledgeSkipped {

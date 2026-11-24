@@ -433,6 +433,48 @@ fn expired_campaign_allows_refund_and_blocks_activity() {
     assert_eq!(s.token.balance(&donor), 1000);
 }
 
+#[test]
+fn refund_pro_rata_overflow_returns_invalid_amount() {
+    let s = Setup::new();
+    let half_max = i128::MAX / 2;
+    let milestones = vec![&s.env, half_max, half_max];
+    let id = s.client.create_campaign(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Emergency,
+        &String::from_str(&s.env, "ipfs://overflow-refund"),
+        &(s.env.ledger().timestamp() + 30 * DAY),
+        &milestones,
+    );
+
+    let donor1 = s.donor(half_max);
+    let donor2 = s.donor(1);
+
+    s.client.donate(&donor1, &id, &half_max);
+    s.client.donate(&donor2, &id, &1);
+
+    s.client.cancel_campaign(&s.creator, &id);
+
+    // donor1: contributed = half_max, unreleased = half_max + 1.
+    // contributed * unreleased overflows i128::MAX -> returns Err(Ok(Error::InvalidAmount))
+    assert_eq!(
+        s.client.try_refund(&donor1, &id),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        s.client.try_refund_for(&donor1, &id),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(s.client.refundable_amount(&id, &donor1), 0);
+
+    // donor2: contributed = 1, unreleased = half_max + 1.
+    // 1 * (half_max + 1) does not overflow -> succeeds
+    let refunded2 = s.client.refund(&donor2, &id);
+    assert_eq!(refunded2, 1);
+}
+
 // ─── refund_for tests ────────────────────────────────────────────────────────
 
 #[test]
@@ -616,6 +658,32 @@ fn missing_campaign_errors() {
 }
 
 // ─── Issue #23 Tests: Emergency fast track ────────────────────────────────────
+
+#[test]
+fn emergency_fast_track_cap_overflow_returns_invalid_amount() {
+    let s = Setup::new();
+    let large_goal = i128::MAX / 1000;
+    let milestones = vec![&s.env, large_goal];
+    let id = s.client.create_campaign(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Emergency,
+        &String::from_str(&s.env, "ipfs://overflow-goal"),
+        &(s.env.ledger().timestamp() + 30 * DAY),
+        &milestones,
+    );
+
+    let donor = s.donor(1_000);
+    s.client.donate(&donor, &id, &500);
+
+    // Calling emergency_fast_track with an extreme goal overflows cap calculation and returns InvalidAmount
+    assert_eq!(
+        s.client.try_emergency_fast_track(&id),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
 
 #[test]
 fn emergency_fast_track_works_for_emergency_campaign() {
@@ -1898,6 +1966,60 @@ fn a_pledge_moves_no_money_until_a_milestone_is_approved() {
 }
 
 #[test]
+fn pledge_pull_overflow_skips_pledge_safely() {
+    let s = Setup::new();
+    let milestone_val = i128::MAX / 10;
+    let milestones = vec![&s.env, milestone_val];
+    let id = s.client.create_campaign(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Emergency,
+        &String::from_str(&s.env, "ipfs://overflow-pledge"),
+        &(s.env.ledger().timestamp() + 30 * DAY),
+        &milestones,
+    );
+
+    let donor_overflow = s.donor(i128::MAX / 2);
+    let donor_normal = s.donor(1_000);
+    let donor_direct = s.donor(milestone_val);
+    let expiry = s.env.ledger().sequence() + 1_000;
+
+    let pledge_large = i128::MAX / 2;
+    s.token
+        .approve(&donor_overflow, &s.client.address, &pledge_large, &expiry);
+    s.token
+        .approve(&donor_normal, &s.client.address, &5, &expiry);
+
+    let pid_overflow = s.client.create_pledge(&donor_overflow, &id, &pledge_large);
+    let pid_normal = s.client.create_pledge(&donor_normal, &id, &5);
+
+    // Direct donation covers milestone so that approval can succeed even if pledges are skipped
+    s.client.donate(&donor_direct, &id, &milestone_val);
+
+    // Initial balances
+    assert_eq!(s.token.balance(&donor_overflow), pledge_large);
+    assert_eq!(s.token.balance(&donor_normal), 1_000);
+
+    // Approve milestone: milestone_val * pledge_large overflows i128::MAX.
+    // Instead of falling back to i128::MAX and draining donor_overflow,
+    // it skips donor_overflow safely.
+    s.client.approve_milestone(&id, &s.proof());
+
+    // donor_overflow was safely skipped - balance untouched and pulled_amount is 0
+    assert_eq!(s.token.balance(&donor_overflow), pledge_large);
+    assert_eq!(s.client.get_pledge(&pid_overflow).unwrap().pulled_amount, 0);
+
+    // donor_normal (5 tokens) does not overflow and was processed
+    let pledge_normal = s.client.get_pledge(&pid_normal).unwrap();
+    assert_eq!(
+        s.token.balance(&donor_normal),
+        1_000 - pledge_normal.pulled_amount
+    );
+}
+
+#[test]
 fn donor_can_cancel_pledge() {
     let s = Setup::new();
     let id = s.campaign();
@@ -2708,6 +2830,66 @@ fn create_campaign_with_due_dates_validates_future_and_monotonicity() {
     );
     assert_eq!(s.client.campaign_count(), count_before + 1);
     assert_eq!(s.client.milestone_due_dates(&res), valid_dates);
+}
+
+#[test]
+fn create_campaign_with_due_dates_rejects_due_dates_exceeding_deadline() {
+    let s = Setup::new();
+    let now = s.env.ledger().timestamp();
+    let milestones = vec![&s.env, 300, 700];
+
+    let count_before = s.client.campaign_count();
+
+    // 1. Due date exceeding deadline (deadline = now + 10 * DAY, due_date = now + 15 * DAY) fails
+    let late_dates = vec![&s.env, now + 5 * DAY, now + 15 * DAY];
+    assert_eq!(
+        s.client.try_create_campaign_with_due_dates(
+            &s.creator,
+            &s.beneficiary,
+            &s.verifier,
+            &s.token.address,
+            &CampaignKind::Emergency,
+            &String::from_str(&s.env, "ipfs://late-due"),
+            &(now + 10 * DAY),
+            &milestones,
+            &late_dates,
+        ),
+        Err(Ok(Error::InvalidMilestones))
+    );
+
+    // 2. Due date = deadline + 1 fails
+    let deadline = now + 10 * DAY;
+    let over_by_one = vec![&s.env, now + 5 * DAY, deadline + 1];
+    assert_eq!(
+        s.client.try_create_campaign_with_due_dates(
+            &s.creator,
+            &s.beneficiary,
+            &s.verifier,
+            &s.token.address,
+            &CampaignKind::Emergency,
+            &String::from_str(&s.env, "ipfs://over-by-one"),
+            &deadline,
+            &milestones,
+            &over_by_one,
+        ),
+        Err(Ok(Error::InvalidMilestones))
+    );
+
+    // 3. Due date equal to deadline succeeds
+    let exact_deadline_dates = vec![&s.env, now + 5 * DAY, deadline];
+    let res = s.client.create_campaign_with_due_dates(
+        &s.creator,
+        &s.beneficiary,
+        &s.verifier,
+        &s.token.address,
+        &CampaignKind::Emergency,
+        &String::from_str(&s.env, "ipfs://exact-deadline-due"),
+        &deadline,
+        &milestones,
+        &exact_deadline_dates,
+    );
+    assert_eq!(s.client.campaign_count(), count_before + 1);
+    assert_eq!(s.client.milestone_due_dates(&res), exact_deadline_dates);
 }
 
 #[test]
