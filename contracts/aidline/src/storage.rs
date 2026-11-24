@@ -1,7 +1,7 @@
 use soroban_sdk::{Address, Env, String, Vec};
 
 use crate::errors::Error;
-use crate::types::{Campaign, DataKey, Pledge, SponsorPool, VerifierBond};
+use crate::types::{Campaign, DataKey, Pledge, SponsorPool, Stream, VerifierBond};
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP: u32 = 30 * DAY_IN_LEDGERS;
@@ -261,6 +261,32 @@ pub fn set_active_campaigns(env: &Env, who: &Address, count: u32) {
         env.storage().persistent().set(&key, &count);
         bump(env, &key);
     }
+}
+
+pub fn milestone_stream_days(env: &Env, campaign_id: u64) -> Option<Vec<u32>> {
+    let key = DataKey::MilestoneStreamDays(campaign_id);
+    let days = env.storage().persistent().get(&key)?;
+    bump(env, &key);
+    Some(days)
+}
+
+pub fn set_milestone_stream_days(env: &Env, campaign_id: u64, days: &Vec<u32>) {
+    let key = DataKey::MilestoneStreamDays(campaign_id);
+    env.storage().persistent().set(&key, days);
+    bump(env, &key);
+}
+
+pub fn stream(env: &Env, campaign_id: u64, milestone_index: u32) -> Option<Stream> {
+    let key = DataKey::Stream(campaign_id, milestone_index);
+    let stream = env.storage().persistent().get(&key)?;
+    bump(env, &key);
+    Some(stream)
+}
+
+pub fn save_stream(env: &Env, campaign_id: u64, milestone_index: u32, stream: &Stream) {
+    let key = DataKey::Stream(campaign_id, milestone_index);
+    env.storage().persistent().set(&key, stream);
+    bump(env, &key);
 }
 
 pub fn campaign_start(env: &Env, campaign_id: u64) -> u64 {

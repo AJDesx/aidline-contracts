@@ -21,11 +21,12 @@ use soroban_sdk::{
 
 pub use errors::Error;
 pub use types::{
-    BondStatus, Campaign, CampaignKind, CampaignStatus, Pledge, SponsorPool, VerifierBond,
+    BondStatus, Campaign, CampaignKind, CampaignStatus, Pledge, SponsorPool, Stream, VerifierBond,
 };
 
 use events::{
-    AdminAccepted, AdminChanged, AdminProposed, BondSlashed, CancelVoteWithdrawn, CancelVoted, BondWithdrawn, CampaignCancelled,
+    AdminAccepted, AdminChanged, AdminProposed, BondSlashed, CancelVoteWithdrawn, CancelVoted,
+    StreamClaimed, BondWithdrawn, CampaignCancelled,
     CampaignCancelledWithReason, CampaignCreated, ContractPaused, ContractUnpaused,
     ContractUpgraded, DeadlineExtended, Donated, EmergencyAdvanceReleased, MatchingApplied,
     MetadataUpdated, MilestoneApproved, MilestoneRejected, MilestoneReleased, PlatformFeeUpdated,
@@ -1350,6 +1351,89 @@ impl Aidline {
         Ok(pledge_id)
     }
 
+    /// Creates a campaign whose milestones can release linearly over time and
+    /// returns its ID (Issue #117).
+    ///
+    /// `stream_days` has one entry per milestone. `0` keeps that milestone a
+    /// lump sum; a positive value makes its payout vest linearly over that many
+    /// days after approval, claimed with [`claim_streamed`]. Other arguments and
+    /// errors are those of [`create_campaign`].
+    ///
+    /// # Errors
+    /// - [`Error::InvalidStream`]: `stream_days` and `milestones` differ in length.
+    pub fn create_campaign_with_streams(
+        env: Env,
+        creator: Address,
+        beneficiary: Address,
+        verifier: Address,
+        token: Address,
+        kind: CampaignKind,
+        metadata_uri: String,
+        deadline: u64,
+        milestones: Vec<i128>,
+        stream_days: Vec<u32>,
+    ) -> Result<u64, Error> {
+        if stream_days.len() != milestones.len() {
+            return Err(Error::InvalidStream);
+        }
+        let id = Self::create_campaign(
+            env.clone(),
+            creator,
+            beneficiary,
+            verifier,
+            token,
+            kind,
+            metadata_uri,
+            deadline,
+            milestones,
+        )?;
+        if stream_days.iter().any(|days| days > 0) {
+            storage::set_milestone_stream_days(&env, id, &stream_days);
+        }
+        Ok(id)
+    }
+
+    /// Pays the beneficiary everything that has vested from the campaign's
+    /// streamed milestones and not yet been claimed, and returns the amount.
+    ///
+    /// Only the beneficiary may call this, and can do so as often as they like.
+    /// Emits [`StreamClaimed`].
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    /// - [`Error::NothingToClaim`]: nothing has vested since the last claim.
+    pub fn claim_streamed(env: Env, campaign_id: u64) -> Result<i128, Error> {
+        let campaign = storage::campaign(&env, campaign_id)?;
+        campaign.beneficiary.require_auth();
+
+        let mut claimable: i128 = 0;
+        for index in 0..campaign.milestones_released {
+            if let Some(mut stream) = storage::stream(&env, campaign_id, index) {
+                let due = Self::vested(&env, &stream) - stream.claimed;
+                if due > 0 {
+                    stream.claimed += due;
+                    storage::save_stream(&env, campaign_id, index, &stream);
+                    claimable += due;
+                }
+            }
+        }
+        if claimable <= 0 {
+            return Err(Error::NothingToClaim);
+        }
+
+        token::Client::new(&env, &campaign.token).transfer(
+            &env.current_contract_address(),
+            &campaign.beneficiary,
+            &claimable,
+        );
+        StreamClaimed {
+            campaign_id,
+            amount: claimable,
+        }
+        .publish(&env);
+        Ok(claimable)
+    }
+
     /// Votes to cancel a campaign, weighted by the donor's contribution
     /// (Issue #114).
     ///
@@ -1733,11 +1817,30 @@ impl Aidline {
         let beneficiary_payout = remaining - fee;
 
         if beneficiary_payout > 0 {
-            token::Client::new(env, &campaign.token).transfer(
-                &env.current_contract_address(),
-                &campaign.beneficiary,
-                &beneficiary_payout,
-            );
+            let stream_days = storage::milestone_stream_days(env, campaign_id)
+                .and_then(|days| days.get(index))
+                .unwrap_or(0);
+            if stream_days > 0 {
+                // A streamed milestone vests over time instead of paying out
+                // now; the funds stay in escrow until claimed (Issue #117).
+                storage::save_stream(
+                    env,
+                    campaign_id,
+                    index,
+                    &Stream {
+                        total: beneficiary_payout,
+                        start: env.ledger().timestamp(),
+                        duration: stream_days as u64 * 86_400,
+                        claimed: 0,
+                    },
+                );
+            } else {
+                token::Client::new(env, &campaign.token).transfer(
+                    &env.current_contract_address(),
+                    &campaign.beneficiary,
+                    &beneficiary_payout,
+                );
+            }
         }
 
         if fee > 0
@@ -1790,6 +1893,7 @@ impl Aidline {
         }
 
         campaign.status = CampaignStatus::Cancelled;
+        Self::settle_streams(&env, &mut campaign);
         storage::save_campaign(&env, &campaign);
         Self::close_verifier_assignments(&env, &campaign.verifiers);
 
@@ -1826,6 +1930,7 @@ impl Aidline {
         }
 
         campaign.status = CampaignStatus::Cancelled;
+        Self::settle_streams(&env, &mut campaign);
         storage::save_campaign(&env, &campaign);
         Self::close_verifier_assignments(&env, &campaign.verifiers);
 
@@ -1886,9 +1991,16 @@ impl Aidline {
 
         if !ended && is_overdue {
             campaign.status = CampaignStatus::Cancelled;
+            Self::settle_streams(env, &mut campaign);
             storage::save_campaign(env, &campaign);
             Self::close_verifier_assignments(env, &campaign.verifiers);
             CampaignCancelled { campaign_id }.publish(env);
+        }
+
+        // A campaign that expired was never cancelled explicitly, so its streams
+        // are settled the first time a refund is taken (Issue #117).
+        if Self::settle_streams(env, &mut campaign) {
+            storage::save_campaign(env, &campaign);
         }
 
         let contributed = storage::contribution(env, campaign_id, donor);
@@ -2243,6 +2355,7 @@ impl Aidline {
         }
 
         campaign.status = CampaignStatus::Cancelled;
+        Self::settle_streams(env, campaign);
         storage::save_campaign(env, campaign);
         Self::close_verifier_assignments(env, &campaign.verifiers);
         CampaignCancelled {
@@ -2250,6 +2363,43 @@ impl Aidline {
         }
         .publish(env);
         Ok(())
+    }
+
+    /// How much of `stream` has vested at the current ledger time.
+    fn vested(env: &Env, stream: &Stream) -> i128 {
+        if stream.duration == 0 {
+            return stream.total;
+        }
+        let elapsed = env.ledger().timestamp().saturating_sub(stream.start);
+        if elapsed >= stream.duration {
+            return stream.total;
+        }
+        stream
+            .total
+            .checked_mul(elapsed as i128)
+            .map(|scaled| scaled / stream.duration as i128)
+            .unwrap_or(stream.total)
+    }
+
+    /// Ends every running stream at its vested amount (Issue #117): the vested
+    /// part stays claimable by the beneficiary and the unvested part leaves
+    /// `released`, so it returns to the donors' refund pool. Returns whether
+    /// anything changed. Settled streams have `duration == 0` and are skipped.
+    fn settle_streams(env: &Env, campaign: &mut Campaign) -> bool {
+        let mut changed = false;
+        for index in 0..campaign.milestones_released {
+            if let Some(mut stream) = storage::stream(env, campaign.id, index)
+                && stream.duration > 0
+            {
+                let vested = Self::vested(env, &stream);
+                campaign.released -= stream.total - vested;
+                stream.total = vested;
+                stream.duration = 0;
+                storage::save_stream(env, campaign.id, index, &stream);
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Counts a new campaign against each of its verifiers (Issue #129).

@@ -98,6 +98,20 @@ pub struct SponsorPool {
     pub matched: i128,
 }
 
+/// A milestone payout that vests linearly after approval (Issue #117).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Stream {
+    /// Amount that will vest in total (shrinks to the vested amount on cancel).
+    pub total: i128,
+    /// Ledger timestamp (seconds) at which vesting started: the approval.
+    pub start: u64,
+    /// Seconds over which `total` vests. `0` means fully vested.
+    pub duration: u64,
+    /// Amount the beneficiary has already claimed.
+    pub claimed: i128,
+}
+
 /// Bond status for verifier bond accounting (Issue #29).
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,4 +198,7 @@ pub enum DataKey {
     CancelVote(u64, Address),
     CancelVoteTotal(u64),
     CampaignStart(u64),
+    // Issue #117: per-milestone streaming release
+    MilestoneStreamDays(u64),
+    Stream(u64, u32),
 }

@@ -89,4 +89,8 @@ pub enum Error {
     NoVote = 52,
     NotStalled = 53,
     VoteThresholdNotReached = 54,
+
+    // Streaming release
+    NothingToClaim = 55,
+    InvalidStream = 56,
 }

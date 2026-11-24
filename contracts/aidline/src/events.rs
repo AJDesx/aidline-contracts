@@ -498,6 +498,21 @@ impl CancelVoteWithdrawn {
     }
 }
 
+// ─── Issue #117: streaming release ───────────────────────────────────────────
+
+/// Emitted when the beneficiary claims what has vested from streamed milestones.
+pub struct StreamClaimed {
+    pub campaign_id: u64,
+    pub amount: i128,
+}
+
+impl StreamClaimed {
+    pub fn publish(&self, env: &Env) {
+        env.events()
+            .publish((symbol_short!("claimed"), self.campaign_id), self.amount);
+    }
+}
+
 // ─── Issue #9: Multisig milestone approved event ───────────────────────────
 
 /// Emitted when a verifier records their approval for a milestone.

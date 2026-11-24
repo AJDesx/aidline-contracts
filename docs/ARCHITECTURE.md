@@ -299,6 +299,10 @@ Donors have a say when a verifier goes silent.
 - **Withdrawing:** `withdraw_cancel_vote` removes the donor's vote while the campaign is still `Active`.
 - **Events:** `cvote`, `cvote_wd` and the usual `canceled`.
 
+### Streaming release (#117)
+
+`create_campaign_with_streams` takes a `stream_days` entry per milestone. `0` is a normal lump sum. A positive value makes that milestone's payout, after the platform fee, vest linearly over that many days from the moment it is approved. Nothing is transferred at approval; the beneficiary calls `claim_streamed` to withdraw what has vested so far, as often as they like, and `vested = total * elapsed / duration`, capped at `total`. The funds stay in escrow until claimed, and the milestone still counts as released. See [ADR 0007](adr/0007-streaming-release.md) for what happens on cancel.
+
 ### How disputes and slashing work
 
 `slash_verifier(admin, verifier, campaign_id, slash_amount)`:
