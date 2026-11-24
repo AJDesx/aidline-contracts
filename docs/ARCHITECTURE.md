@@ -284,6 +284,10 @@ The admin sets a required bond amount (`set_bond_requirement`) and withdrawal de
 
 After deregistration the verifier must wait at least `bond_withdraw_delay` seconds before calling `withdraw_bond`. This delay gives the admin time to slash if a fraud dispute is raised.
 
+### Bond withdrawal while campaigns are open (#129)
+
+A verifier cannot take their bond back while they are still responsible for a campaign. The contract keeps a count per verifier of campaigns that are assigned to them and not yet completed or cancelled: it goes up when a campaign is created with them or reassigned to them, and down when the campaign completes, is cancelled, or is reassigned away. `withdraw_bond` fails with `VerifierHasActiveCampaigns` while the count is above zero, so the bond stays slashable for the whole life of the campaigns. A campaign past its deadline stays active until it is cancelled (the creator or admin can cancel it), which then releases the verifier. Campaigns created before this change are not counted.
+
 ### How disputes and slashing work
 
 `slash_verifier(admin, verifier, campaign_id, slash_amount)`:

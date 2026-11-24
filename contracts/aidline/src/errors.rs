@@ -80,4 +80,7 @@ pub enum Error {
 
     // Milestone due date
     MilestoneOverdue = 42,
+
+    // Verifier bond withdrawal
+    VerifierHasActiveCampaigns = 50,
 }

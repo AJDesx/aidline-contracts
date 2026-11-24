@@ -477,6 +477,12 @@ impl Aidline {
             return Err(Error::BondNotWithdrawable);
         }
 
+        // The bond is the collateral for every campaign the verifier is still
+        // responsible for, so it stays slashable until they are all finished.
+        if storage::active_campaigns(&env, &verifier) > 0 {
+            return Err(Error::VerifierHasActiveCampaigns);
+        }
+
         let delay = storage::bond_withdraw_delay(&env);
         let elapsed = env.ledger().timestamp() - bond.deregistered_at;
         if elapsed < delay {
@@ -850,6 +856,7 @@ impl Aidline {
             last_approval_time: 0,
         };
         storage::save_campaign(&env, &campaign);
+        Self::open_verifier_assignments(&env, &campaign.verifiers);
 
         CampaignCreated {
             campaign_id: id,
@@ -1648,6 +1655,7 @@ impl Aidline {
         campaign.last_approval_time = env.ledger().timestamp();
         if campaign.milestones_released == campaign.milestones.len() {
             campaign.status = CampaignStatus::Completed;
+            Self::close_verifier_assignments(env, &campaign.verifiers);
         }
         storage::save_campaign(env, &campaign);
 
@@ -1683,6 +1691,7 @@ impl Aidline {
 
         campaign.status = CampaignStatus::Cancelled;
         storage::save_campaign(&env, &campaign);
+        Self::close_verifier_assignments(&env, &campaign.verifiers);
 
         CampaignCancelled { campaign_id }.publish(&env);
         Ok(())
@@ -1718,6 +1727,7 @@ impl Aidline {
 
         campaign.status = CampaignStatus::Cancelled;
         storage::save_campaign(&env, &campaign);
+        Self::close_verifier_assignments(&env, &campaign.verifiers);
 
         CampaignCancelledWithReason {
             campaign_id,
@@ -1777,6 +1787,7 @@ impl Aidline {
         if !ended && is_overdue {
             campaign.status = CampaignStatus::Cancelled;
             storage::save_campaign(env, &campaign);
+            Self::close_verifier_assignments(env, &campaign.verifiers);
             CampaignCancelled { campaign_id }.publish(env);
         }
 
@@ -1840,6 +1851,8 @@ impl Aidline {
         }
 
         let old_verifier = campaign.verifier.clone();
+        // The campaign moves from the old verifiers' bonds to the new one's.
+        Self::close_verifier_assignments(&env, &campaign.verifiers);
         campaign.verifier = new_verifier.clone();
         let mut verifiers = Vec::new(&env);
         verifiers.push_back(new_verifier.clone());
@@ -1847,6 +1860,7 @@ impl Aidline {
         campaign.threshold = 1;
         campaign.verifier_reassignments += 1;
         storage::save_campaign(&env, &campaign);
+        Self::open_verifier_assignments(&env, &campaign.verifiers);
 
         VerifierReassigned {
             campaign_id,
@@ -2112,6 +2126,23 @@ impl Aidline {
             return Err(Error::MilestoneOverdue);
         }
         Ok(())
+    }
+
+    /// Counts a new campaign against each of its verifiers (Issue #129).
+    fn open_verifier_assignments(env: &Env, verifiers: &Vec<Address>) {
+        for verifier in verifiers.iter() {
+            let count = storage::active_campaigns(env, &verifier);
+            storage::set_active_campaigns(env, &verifier, count + 1);
+        }
+    }
+
+    /// Releases a campaign from each of its verifiers once it is completed or
+    /// cancelled, or moved to another verifier (Issue #129).
+    fn close_verifier_assignments(env: &Env, verifiers: &Vec<Address>) {
+        for verifier in verifiers.iter() {
+            let count = storage::active_campaigns(env, &verifier);
+            storage::set_active_campaigns(env, &verifier, count.saturating_sub(1));
+        }
     }
 
     /// Pull pledge funds proportionally toward `milestone_amount`.

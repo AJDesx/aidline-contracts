@@ -244,6 +244,25 @@ pub fn next_pledge_id(env: &Env) -> u64 {
 
 /// Ids of the pledges made to `campaign_id`, so settling one campaign never
 /// reads another campaign's pledges (Issue #125).
+pub fn active_campaigns(env: &Env, who: &Address) -> u32 {
+    let key = DataKey::VerifierActiveCampaigns(who.clone());
+    let count: Option<u32> = env.storage().persistent().get(&key);
+    if count.is_some() {
+        bump(env, &key);
+    }
+    count.unwrap_or(0)
+}
+
+pub fn set_active_campaigns(env: &Env, who: &Address, count: u32) {
+    let key = DataKey::VerifierActiveCampaigns(who.clone());
+    if count == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &count);
+        bump(env, &key);
+    }
+}
+
 pub fn campaign_pledges(env: &Env, campaign_id: u64) -> Vec<u64> {
     let key = DataKey::CampaignPledges(campaign_id);
     match env.storage().persistent().get(&key) {
