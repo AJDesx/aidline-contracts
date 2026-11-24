@@ -460,6 +460,44 @@ impl EmergencyAdvanceReleased {
     }
 }
 
+// ─── Issue #114: donor votes to cancel ───────────────────────────────────────
+
+/// Emitted when a donor votes to cancel a campaign.
+pub struct CancelVoted {
+    pub campaign_id: u64,
+    pub donor: Address,
+    /// The donor's contribution, which is their vote's weight.
+    pub weight: i128,
+    /// Total weight of all votes after this one.
+    pub total: i128,
+}
+
+impl CancelVoted {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("cvote"), self.campaign_id, self.donor.clone()),
+            (self.weight, self.total),
+        );
+    }
+}
+
+/// Emitted when a donor withdraws their cancel vote.
+pub struct CancelVoteWithdrawn {
+    pub campaign_id: u64,
+    pub donor: Address,
+    pub weight: i128,
+    pub total: i128,
+}
+
+impl CancelVoteWithdrawn {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (symbol_short!("cvote_wd"), self.campaign_id, self.donor.clone()),
+            (self.weight, self.total),
+        );
+    }
+}
+
 // ─── Issue #9: Multisig milestone approved event ───────────────────────────
 
 /// Emitted when a verifier records their approval for a milestone.

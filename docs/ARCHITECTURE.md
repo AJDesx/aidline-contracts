@@ -288,6 +288,17 @@ After deregistration the verifier must wait at least `bond_withdraw_delay` secon
 
 A verifier cannot take their bond back while they are still responsible for a campaign. The contract keeps a count per verifier of campaigns that are assigned to them and not yet completed or cancelled: it goes up when a campaign is created with them or reassigned to them, and down when the campaign completes, is cancelled, or is reassigned away. `withdraw_bond` fails with `VerifierHasActiveCampaigns` while the count is above zero, so the bond stays slashable for the whole life of the campaigns. A campaign past its deadline stays active until it is cancelled (the creator or admin can cancel it), which then releases the verifier. Campaigns created before this change are not counted.
 
+### Donor vote to cancel a stalled campaign (#114)
+
+Donors have a say when a verifier goes silent.
+
+- **Weight:** a donor's vote counts for their contribution at the time they vote, once per donor, and only while the campaign is `Active`.
+- **Stall period:** `STALL_PERIOD`, 14 days with no progress, measured from the later of the campaign's start and its last approved milestone. Any approval resets it.
+- **Threshold:** the total vote weight must reach `CANCEL_VOTE_BPS` (50%) of `raised`.
+- **Trigger:** `vote_cancel` cancels the campaign if both conditions hold when the vote is cast. A vote cast before the stall period ended is recorded, and anyone can call `execute_vote_cancel` once the period has passed. The campaign then becomes `Cancelled` and refunds open.
+- **Withdrawing:** `withdraw_cancel_vote` removes the donor's vote while the campaign is still `Active`.
+- **Events:** `cvote`, `cvote_wd` and the usual `canceled`.
+
 ### How disputes and slashing work
 
 `slash_verifier(admin, verifier, campaign_id, slash_amount)`:

@@ -83,4 +83,10 @@ pub enum Error {
 
     // Verifier bond withdrawal
     VerifierHasActiveCampaigns = 50,
+
+    // Donor vote to cancel
+    AlreadyVoted = 51,
+    NoVote = 52,
+    NotStalled = 53,
+    VoteThresholdNotReached = 54,
 }

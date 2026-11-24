@@ -263,6 +263,55 @@ pub fn set_active_campaigns(env: &Env, who: &Address, count: u32) {
     }
 }
 
+pub fn campaign_start(env: &Env, campaign_id: u64) -> u64 {
+    let key = DataKey::CampaignStart(campaign_id);
+    let start: Option<u64> = env.storage().persistent().get(&key);
+    if start.is_some() {
+        bump(env, &key);
+    }
+    start.unwrap_or(0)
+}
+
+pub fn set_campaign_start(env: &Env, campaign_id: u64, timestamp: u64) {
+    let key = DataKey::CampaignStart(campaign_id);
+    env.storage().persistent().set(&key, &timestamp);
+    bump(env, &key);
+}
+
+pub fn cancel_vote(env: &Env, campaign_id: u64, donor: &Address) -> i128 {
+    let key = DataKey::CancelVote(campaign_id, donor.clone());
+    let weight: Option<i128> = env.storage().persistent().get(&key);
+    if weight.is_some() {
+        bump(env, &key);
+    }
+    weight.unwrap_or(0)
+}
+
+pub fn set_cancel_vote(env: &Env, campaign_id: u64, donor: &Address, weight: i128) {
+    let key = DataKey::CancelVote(campaign_id, donor.clone());
+    if weight == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &weight);
+        bump(env, &key);
+    }
+}
+
+pub fn cancel_vote_total(env: &Env, campaign_id: u64) -> i128 {
+    let key = DataKey::CancelVoteTotal(campaign_id);
+    let total: Option<i128> = env.storage().persistent().get(&key);
+    if total.is_some() {
+        bump(env, &key);
+    }
+    total.unwrap_or(0)
+}
+
+pub fn set_cancel_vote_total(env: &Env, campaign_id: u64, total: i128) {
+    let key = DataKey::CancelVoteTotal(campaign_id);
+    env.storage().persistent().set(&key, &total);
+    bump(env, &key);
+}
+
 pub fn campaign_pledges(env: &Env, campaign_id: u64) -> Vec<u64> {
     let key = DataKey::CampaignPledges(campaign_id);
     match env.storage().persistent().get(&key) {

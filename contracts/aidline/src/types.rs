@@ -180,4 +180,8 @@ pub enum DataKey {
     CampaignPledges(u64),
     // Issue #129: campaigns a verifier is assigned to that are not yet completed or cancelled
     VerifierActiveCampaigns(Address),
+    // Issue #114: donor votes to cancel a stalled campaign
+    CancelVote(u64, Address),
+    CancelVoteTotal(u64),
+    CampaignStart(u64),
 }

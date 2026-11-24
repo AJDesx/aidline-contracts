@@ -25,7 +25,7 @@ pub use types::{
 };
 
 use events::{
-    AdminAccepted, AdminChanged, AdminProposed, BondSlashed, BondWithdrawn, CampaignCancelled,
+    AdminAccepted, AdminChanged, AdminProposed, BondSlashed, CancelVoteWithdrawn, CancelVoted, BondWithdrawn, CampaignCancelled,
     CampaignCancelledWithReason, CampaignCreated, ContractPaused, ContractUnpaused,
     ContractUpgraded, DeadlineExtended, Donated, EmergencyAdvanceReleased, MatchingApplied,
     MetadataUpdated, MilestoneApproved, MilestoneRejected, MilestoneReleased, PlatformFeeUpdated,
@@ -52,6 +52,13 @@ const MAX_DEADLINE_EXTENSION: u64 = 30 * 86_400;
 
 /// Maximum number of times a campaign's verifier may be reassigned.
 pub const MAX_VERIFIER_REASSIGNMENTS: u32 = 2;
+
+/// Seconds a campaign must go without progress (campaign start or the last
+/// approved milestone, whichever is later) before donors can cancel it by vote.
+pub const STALL_PERIOD: u64 = 14 * 86_400;
+
+/// Share of `raised`, in basis points, that cancel votes must reach.
+pub const CANCEL_VOTE_BPS: i128 = 5_000;
 /// Maximum page limit for paginated donor enumeration.
 const MAX_DONORS_PAGE_LIMIT: u32 = 50;
 
@@ -856,6 +863,7 @@ impl Aidline {
             last_approval_time: 0,
         };
         storage::save_campaign(&env, &campaign);
+        storage::set_campaign_start(&env, id, env.ledger().timestamp());
         Self::open_verifier_assignments(&env, &campaign.verifiers);
 
         CampaignCreated {
@@ -1340,6 +1348,98 @@ impl Aidline {
         .publish(&env);
 
         Ok(pledge_id)
+    }
+
+    /// Votes to cancel a campaign, weighted by the donor's contribution
+    /// (Issue #114).
+    ///
+    /// Each donor votes once while the campaign is `Active`. Once the votes
+    /// reach [`CANCEL_VOTE_BPS`] of `raised` and the campaign has made no
+    /// progress for [`STALL_PERIOD`], the campaign is cancelled and refunds
+    /// open. Returns `true` if this vote cancelled it. Emits [`CancelVoted`],
+    /// and [`CampaignCancelled`] when it cancels.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`] / [`Error::CampaignNotActive`]
+    /// - [`Error::AlreadyVoted`]: this donor already has a vote on the campaign.
+    /// - [`Error::NothingToRefund`]: the donor has no contribution to weigh.
+    pub fn vote_cancel(env: Env, donor: Address, campaign_id: u64) -> Result<bool, Error> {
+        donor.require_auth();
+        let mut campaign = storage::campaign(&env, campaign_id)?;
+        if campaign.status != CampaignStatus::Active {
+            return Err(Error::CampaignNotActive);
+        }
+        if storage::cancel_vote(&env, campaign_id, &donor) > 0 {
+            return Err(Error::AlreadyVoted);
+        }
+        let weight = storage::contribution(&env, campaign_id, &donor);
+        if weight <= 0 {
+            return Err(Error::NothingToRefund);
+        }
+
+        let total = storage::cancel_vote_total(&env, campaign_id) + weight;
+        storage::set_cancel_vote(&env, campaign_id, &donor, weight);
+        storage::set_cancel_vote_total(&env, campaign_id, total);
+        CancelVoted {
+            campaign_id,
+            donor,
+            weight,
+            total,
+        }
+        .publish(&env);
+
+        Ok(Self::cancel_by_vote(&env, &mut campaign).is_ok())
+    }
+
+    /// Withdraws the donor's cancel vote while the campaign is still `Active`.
+    /// Emits [`CancelVoteWithdrawn`].
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`] / [`Error::CampaignNotActive`]
+    /// - [`Error::NoVote`]: the donor has no vote on this campaign.
+    pub fn withdraw_cancel_vote(env: Env, donor: Address, campaign_id: u64) -> Result<(), Error> {
+        donor.require_auth();
+        let campaign = storage::campaign(&env, campaign_id)?;
+        if campaign.status != CampaignStatus::Active {
+            return Err(Error::CampaignNotActive);
+        }
+        let weight = storage::cancel_vote(&env, campaign_id, &donor);
+        if weight <= 0 {
+            return Err(Error::NoVote);
+        }
+
+        let total = storage::cancel_vote_total(&env, campaign_id) - weight;
+        storage::set_cancel_vote(&env, campaign_id, &donor, 0);
+        storage::set_cancel_vote_total(&env, campaign_id, total);
+        CancelVoteWithdrawn {
+            campaign_id,
+            donor,
+            weight,
+            total,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Cancels the campaign if its votes already reached the threshold and the
+    /// stall period has now passed. Anyone may call it; this is how votes cast
+    /// before the stall period ended take effect (Issue #114).
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`] / [`Error::CampaignNotActive`]
+    /// - [`Error::NotStalled`]: the stall period has not passed.
+    /// - [`Error::VoteThresholdNotReached`]: the votes are below the threshold.
+    pub fn execute_vote_cancel(env: Env, campaign_id: u64) -> Result<(), Error> {
+        let mut campaign = storage::campaign(&env, campaign_id)?;
+        if campaign.status != CampaignStatus::Active {
+            return Err(Error::CampaignNotActive);
+        }
+        Self::cancel_by_vote(&env, &mut campaign)
+    }
+
+    /// Returns the total weight of cancel votes on `campaign_id`.
+    pub fn cancel_vote_weight(env: Env, campaign_id: u64) -> i128 {
+        storage::cancel_vote_total(&env, campaign_id)
     }
 
     /// Cancels an active pledge, marking it inactive.
@@ -2125,6 +2225,30 @@ impl Aidline {
         if Self::is_overdue(env, campaign) {
             return Err(Error::MilestoneOverdue);
         }
+        Ok(())
+    }
+
+    /// Cancels `campaign` if its cancel votes have reached the threshold after
+    /// the stall period (Issue #114).
+    fn cancel_by_vote(env: &Env, campaign: &mut Campaign) -> Result<(), Error> {
+        let base = campaign
+            .last_approval_time
+            .max(storage::campaign_start(env, campaign.id));
+        if base == 0 || env.ledger().timestamp() < base.saturating_add(STALL_PERIOD) {
+            return Err(Error::NotStalled);
+        }
+        let votes = storage::cancel_vote_total(env, campaign.id);
+        if votes <= 0 || votes * 10_000 < campaign.raised * CANCEL_VOTE_BPS {
+            return Err(Error::VoteThresholdNotReached);
+        }
+
+        campaign.status = CampaignStatus::Cancelled;
+        storage::save_campaign(env, campaign);
+        Self::close_verifier_assignments(env, &campaign.verifiers);
+        CampaignCancelled {
+            campaign_id: campaign.id,
+        }
+        .publish(env);
         Ok(())
     }
 
