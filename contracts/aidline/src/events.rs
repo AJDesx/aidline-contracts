@@ -460,6 +460,29 @@ impl EmergencyAdvanceReleased {
     }
 }
 
+// ─── Issue #116: split payouts ───────────────────────────────────────────────
+
+/// Emitted once per beneficiary when a split-payout campaign pays out a
+/// milestone or the emergency advance.
+pub struct BeneficiaryPaid {
+    pub campaign_id: u64,
+    pub recipient: Address,
+    pub amount: i128,
+}
+
+impl BeneficiaryPaid {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (
+                symbol_short!("paid"),
+                self.campaign_id,
+                self.recipient.clone(),
+            ),
+            self.amount,
+        );
+    }
+}
+
 // ─── Issue #9: Multisig milestone approved event ───────────────────────────
 
 /// Emitted when a verifier records their approval for a milestone.

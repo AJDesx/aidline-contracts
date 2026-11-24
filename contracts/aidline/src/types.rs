@@ -98,6 +98,14 @@ pub struct SponsorPool {
     pub matched: i128,
 }
 
+/// One recipient of a split payout and its share in basis points (Issue #116).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Beneficiary {
+    pub to: Address,
+    pub bps: u32,
+}
+
 /// Bond status for verifier bond accounting (Issue #29).
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -176,4 +184,6 @@ pub enum DataKey {
     VerifierProfile(Address),
     // Paginated donors list
     CampaignDonors(u64),
+    // Issue #116: beneficiaries of a split-payout campaign
+    Beneficiaries(u64),
 }

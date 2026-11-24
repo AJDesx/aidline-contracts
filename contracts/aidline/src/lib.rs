@@ -21,11 +21,12 @@ use soroban_sdk::{
 
 pub use errors::Error;
 pub use types::{
-    BondStatus, Campaign, CampaignKind, CampaignStatus, Pledge, SponsorPool, VerifierBond,
+    Beneficiary, BondStatus, Campaign, CampaignKind, CampaignStatus, Pledge, SponsorPool,
+    VerifierBond,
 };
 
 use events::{
-    AdminAccepted, AdminChanged, AdminProposed, BondSlashed, BondWithdrawn, CampaignCancelled,
+    AdminAccepted, AdminChanged, AdminProposed, BeneficiaryPaid, BondSlashed, BondWithdrawn, CampaignCancelled,
     CampaignCancelledWithReason, CampaignCreated, ContractPaused, ContractUnpaused,
     ContractUpgraded, DeadlineExtended, Donated, EmergencyAdvanceReleased, MatchingApplied,
     MetadataUpdated, MilestoneApproved, MilestoneRejected, MilestoneReleased, PlatformFeeUpdated,
@@ -52,6 +53,9 @@ const MAX_DEADLINE_EXTENSION: u64 = 30 * 86_400;
 
 /// Maximum number of times a campaign's verifier may be reassigned.
 pub const MAX_VERIFIER_REASSIGNMENTS: u32 = 2;
+
+/// Most beneficiaries a split-payout campaign may name (Issue #116).
+pub const MAX_BENEFICIARIES: u32 = 10;
 /// Maximum page limit for paginated donor enumeration.
 const MAX_DONORS_PAGE_LIMIT: u32 = 50;
 
@@ -912,6 +916,93 @@ impl Aidline {
         Ok(id)
     }
 
+    /// Creates a campaign whose payouts are split across several beneficiaries
+    /// and returns its ID (Issue #116).
+    ///
+    /// `beneficiaries` lists each recipient with a share in basis points; the
+    /// shares must sum to 10,000, be positive and name distinct addresses, and
+    /// the verifier cannot be one of them. Each payout (milestone or emergency
+    /// advance) gives every beneficiary `amount * bps / 10_000`, rounded down,
+    /// with the rounding dust going to the first beneficiary, and emits
+    /// [`BeneficiaryPaid`] per recipient. With a single beneficiary this is
+    /// the same as [`create_campaign`]. Other arguments and errors are those of
+    /// [`create_campaign`].
+    ///
+    /// # Errors
+    /// - [`Error::InvalidBeneficiaries`]: the list is empty, longer than
+    ///   [`MAX_BENEFICIARIES`], has a zero share, repeats an address, or its
+    ///   shares do not sum to 10,000.
+    /// - [`Error::ConflictOfInterest`]: the verifier is one of the beneficiaries.
+    pub fn create_campaign_with_beneficiaries(
+        env: Env,
+        creator: Address,
+        beneficiaries: Vec<Beneficiary>,
+        verifier: Address,
+        token: Address,
+        kind: CampaignKind,
+        metadata_uri: String,
+        deadline: u64,
+        milestones: Vec<i128>,
+    ) -> Result<u64, Error> {
+        if beneficiaries.is_empty() || beneficiaries.len() > MAX_BENEFICIARIES {
+            return Err(Error::InvalidBeneficiaries);
+        }
+        let mut total_bps: u32 = 0;
+        for (i, b) in beneficiaries.iter().enumerate() {
+            if b.bps == 0 {
+                return Err(Error::InvalidBeneficiaries);
+            }
+            total_bps = total_bps
+                .checked_add(b.bps)
+                .ok_or(Error::InvalidBeneficiaries)?;
+            if b.to == verifier {
+                return Err(Error::ConflictOfInterest);
+            }
+            for earlier in beneficiaries.iter().take(i) {
+                if earlier.to == b.to {
+                    return Err(Error::InvalidBeneficiaries);
+                }
+            }
+        }
+        if total_bps != MAX_RATIO_BPS {
+            return Err(Error::InvalidBeneficiaries);
+        }
+
+        let primary = beneficiaries.get(0).unwrap().to;
+        let id = Self::create_campaign(
+            env.clone(),
+            creator,
+            primary,
+            verifier,
+            token,
+            kind,
+            metadata_uri,
+            deadline,
+            milestones,
+        )?;
+        if beneficiaries.len() > 1 {
+            storage::set_beneficiaries(&env, id, &beneficiaries);
+        }
+        Ok(id)
+    }
+
+    /// Returns the beneficiaries of `campaign_id`: the split list, or the single
+    /// beneficiary with 10,000 bps for an ordinary campaign.
+    ///
+    /// # Errors
+    /// - [`Error::CampaignNotFound`]: no campaign with `campaign_id` exists.
+    pub fn get_beneficiaries(env: Env, campaign_id: u64) -> Result<Vec<Beneficiary>, Error> {
+        let campaign = storage::campaign(&env, campaign_id)?;
+        Ok(storage::beneficiaries(&env, campaign_id).unwrap_or_else(|| {
+            let mut single = Vec::new(&env);
+            single.push_back(Beneficiary {
+                to: campaign.beneficiary,
+                bps: MAX_RATIO_BPS,
+            });
+            single
+        }))
+    }
+
     /// Updates the off-chain metadata URI for `campaign_id`.
     ///
     /// Only the campaign's creator may call this, and only before any
@@ -1417,11 +1508,7 @@ impl Aidline {
         // Advance is the lesser of the 20% cap and available escrow.
         let advance = if available < cap { available } else { cap };
 
-        token::Client::new(&env, &campaign.token).transfer(
-            &env.current_contract_address(),
-            &campaign.beneficiary,
-            &advance,
-        );
+        Self::pay_beneficiaries(&env, &campaign, advance);
 
         // Record: advance is accounted as both released and emergency_advance.
         campaign.released += advance;
@@ -1629,11 +1716,7 @@ impl Aidline {
         let beneficiary_payout = remaining - fee;
 
         if beneficiary_payout > 0 {
-            token::Client::new(env, &campaign.token).transfer(
-                &env.current_contract_address(),
-                &campaign.beneficiary,
-                &beneficiary_payout,
-            );
+            Self::pay_beneficiaries(env, &campaign, beneficiary_payout);
         }
 
         if fee > 0
@@ -2115,6 +2198,43 @@ impl Aidline {
             return Err(Error::MilestoneOverdue);
         }
         Ok(())
+    }
+
+    /// Pays `amount` out of escrow to the campaign's beneficiary, or splits it
+    /// across its beneficiaries (Issue #116). Every share is rounded down and
+    /// the leftover goes to the first beneficiary, so the payments always sum to
+    /// exactly `amount`.
+    fn pay_beneficiaries(env: &Env, campaign: &Campaign, amount: i128) {
+        let tok = token::Client::new(env, &campaign.token);
+        let from = env.current_contract_address();
+        let Some(list) = storage::beneficiaries(env, campaign.id) else {
+            tok.transfer(&from, &campaign.beneficiary, &amount);
+            return;
+        };
+
+        let mut shares: Vec<i128> = Vec::new(env);
+        let mut paid: i128 = 0;
+        for b in list.iter() {
+            let share = amount * (b.bps as i128) / MAX_RATIO_BPS as i128;
+            paid += share;
+            shares.push_back(share);
+        }
+        let dust = amount - paid;
+        for (i, b) in list.iter().enumerate() {
+            let mut share = shares.get(i as u32).unwrap();
+            if i == 0 {
+                share += dust;
+            }
+            if share > 0 {
+                tok.transfer(&from, &b.to, &share);
+                BeneficiaryPaid {
+                    campaign_id: campaign.id,
+                    recipient: b.to,
+                    amount: share,
+                }
+                .publish(env);
+            }
+        }
     }
 
     /// Pull pledge funds proportionally toward `milestone_amount`.

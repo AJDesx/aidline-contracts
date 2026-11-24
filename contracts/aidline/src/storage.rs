@@ -1,7 +1,7 @@
 use soroban_sdk::{Address, Env, String, Vec};
 
 use crate::errors::Error;
-use crate::types::{Campaign, DataKey, Pledge, SponsorPool, VerifierBond};
+use crate::types::{Beneficiary, Campaign, DataKey, Pledge, SponsorPool, VerifierBond};
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 pub(crate) const INSTANCE_BUMP: u32 = 30 * DAY_IN_LEDGERS;
@@ -133,6 +133,19 @@ pub fn extend_campaign_ttl(env: &Env, id: u64) -> Result<(), Error> {
 pub fn save_campaign(env: &Env, campaign: &Campaign) {
     let key = DataKey::Campaign(campaign.id);
     env.storage().persistent().set(&key, campaign);
+    bump(env, &key);
+}
+
+pub fn beneficiaries(env: &Env, campaign_id: u64) -> Option<Vec<Beneficiary>> {
+    let key = DataKey::Beneficiaries(campaign_id);
+    let list = env.storage().persistent().get(&key)?;
+    bump(env, &key);
+    Some(list)
+}
+
+pub fn set_beneficiaries(env: &Env, campaign_id: u64, list: &Vec<Beneficiary>) {
+    let key = DataKey::Beneficiaries(campaign_id);
+    env.storage().persistent().set(&key, list);
     bump(env, &key);
 }
 
