@@ -1,7 +1,9 @@
 use soroban_sdk::{Address, Env, String, Vec};
 
 use crate::errors::Error;
-use crate::types::{Beneficiary, Campaign, DataKey, Pledge, SponsorPool, VerifierBond};
+use crate::types::{
+    Beneficiary, Campaign, DataKey, Pledge, SponsorPool, VerifierBond, VerifierStats,
+};
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 pub(crate) const INSTANCE_BUMP: u32 = 30 * DAY_IN_LEDGERS;
@@ -133,6 +135,29 @@ pub fn extend_campaign_ttl(env: &Env, id: u64) -> Result<(), Error> {
 pub fn save_campaign(env: &Env, campaign: &Campaign) {
     let key = DataKey::Campaign(campaign.id);
     env.storage().persistent().set(&key, campaign);
+    bump(env, &key);
+}
+
+pub fn verifier_stats(env: &Env, who: &Address) -> VerifierStats {
+    let key = DataKey::VerifierStats(who.clone());
+    match env.storage().persistent().get(&key) {
+        Some(stats) => {
+            bump(env, &key);
+            stats
+        }
+        None => VerifierStats {
+            campaigns_assigned: 0,
+            milestones_approved: 0,
+            campaigns_completed: 0,
+            campaigns_cancelled: 0,
+            total_slashed: 0,
+        },
+    }
+}
+
+pub fn save_verifier_stats(env: &Env, who: &Address, stats: &VerifierStats) {
+    let key = DataKey::VerifierStats(who.clone());
+    env.storage().persistent().set(&key, stats);
     bump(env, &key);
 }
 

@@ -22,7 +22,7 @@ use soroban_sdk::{
 pub use errors::Error;
 pub use types::{
     Beneficiary, BondStatus, Campaign, CampaignKind, CampaignStatus, Pledge, SponsorPool,
-    VerifierBond,
+    VerifierBond, VerifierStats,
 };
 
 use events::{
@@ -600,6 +600,7 @@ impl Aidline {
             bond.status = BondStatus::Slashed;
         }
         storage::save_verifier_bond(&env, &bond);
+        Self::bump_verifier(&env, &verifier, |s| s.total_slashed += slash_amount);
 
         let contract_addr = env.current_contract_address();
         let prev = storage::contribution(&env, campaign_id, &contract_addr);
@@ -899,6 +900,7 @@ impl Aidline {
             last_approval_time: 0,
         };
         storage::save_campaign(&env, &campaign);
+        Self::bump_all_verifiers(&env, &campaign.verifiers, |s| s.campaigns_assigned += 1);
 
         CampaignCreated {
             campaign_id: id,
@@ -1712,6 +1714,7 @@ impl Aidline {
         }
         approvals.push_back(verifier.clone());
         storage::save_milestone_approvals(env, campaign_id, index, &approvals);
+        Self::bump_verifier(env, &verifier, |s| s.milestones_approved += 1);
 
         MilestoneApproved {
             campaign_id,
@@ -1785,6 +1788,7 @@ impl Aidline {
         campaign.last_approval_time = env.ledger().timestamp();
         if campaign.milestones_released == campaign.milestones.len() {
             campaign.status = CampaignStatus::Completed;
+            Self::bump_all_verifiers(env, &campaign.verifiers, |s| s.campaigns_completed += 1);
         }
         storage::save_campaign(env, &campaign);
 
@@ -1820,6 +1824,7 @@ impl Aidline {
 
         campaign.status = CampaignStatus::Cancelled;
         storage::save_campaign(&env, &campaign);
+        Self::bump_all_verifiers(&env, &campaign.verifiers, |s| s.campaigns_cancelled += 1);
 
         CampaignCancelled { campaign_id }.publish(&env);
         Ok(())
@@ -1855,6 +1860,7 @@ impl Aidline {
 
         campaign.status = CampaignStatus::Cancelled;
         storage::save_campaign(&env, &campaign);
+        Self::bump_all_verifiers(&env, &campaign.verifiers, |s| s.campaigns_cancelled += 1);
 
         CampaignCancelledWithReason {
             campaign_id,
@@ -1915,6 +1921,7 @@ impl Aidline {
         if !ended && is_overdue {
             campaign.status = CampaignStatus::Cancelled;
             storage::save_campaign(env, &campaign);
+            Self::bump_all_verifiers(env, &campaign.verifiers, |s| s.campaigns_cancelled += 1);
             CampaignCancelled { campaign_id }.publish(env);
         }
 
@@ -1985,6 +1992,9 @@ impl Aidline {
         campaign.threshold = 1;
         campaign.verifier_reassignments += 1;
         storage::save_campaign(&env, &campaign);
+        // Only the new verifier is assigned now; the old one keeps the record
+        // of the campaign they held (Issue #119).
+        Self::bump_verifier(&env, &new_verifier, |s| s.campaigns_assigned += 1);
 
         VerifierReassigned {
             campaign_id,
@@ -1997,6 +2007,15 @@ impl Aidline {
     }
 
     // ─── Views ────────────────────────────────────────────────────────────────
+
+    /// Returns `verifier`'s on-chain track record (Issue #119): campaigns
+    /// assigned, milestone approvals recorded, campaigns completed and
+    /// cancelled while assigned, and the total slashed from their bond. All
+    /// zeros for an address that has done nothing. A reassigned campaign counts
+    /// for whoever held it at the time of each event.
+    pub fn verifier_stats(env: Env, verifier: Address) -> VerifierStats {
+        storage::verifier_stats(&env, &verifier)
+    }
 
     /// Returns the [`Campaign`] for `campaign_id`.
     ///
@@ -2256,6 +2275,20 @@ impl Aidline {
     /// across its beneficiaries (Issue #116). Every share is rounded down and
     /// the leftover goes to the first beneficiary, so the payments always sum to
     /// exactly `amount`.
+    /// Applies `update` to one verifier's track record (Issue #119).
+    fn bump_verifier(env: &Env, who: &Address, update: impl FnOnce(&mut VerifierStats)) {
+        let mut stats = storage::verifier_stats(env, who);
+        update(&mut stats);
+        storage::save_verifier_stats(env, who, &stats);
+    }
+
+    /// Applies `update` to the track record of every verifier on a campaign.
+    fn bump_all_verifiers(env: &Env, who: &Vec<Address>, update: impl Fn(&mut VerifierStats)) {
+        for verifier in who.iter() {
+            Self::bump_verifier(env, &verifier, &update);
+        }
+    }
+
     /// Fails while stored data is older than this build expects (Issue #118).
     fn ensure_current_schema(env: &Env) -> Result<(), Error> {
         if storage::schema_version(env) < SCHEMA_VERSION {

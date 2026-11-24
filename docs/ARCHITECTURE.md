@@ -54,6 +54,20 @@ This provides critical funds in the first hours of a disaster without waiting fo
 - **Accounting:** The advance is recorded against milestone one (`milestones[0]`). When the verifier later formally approves milestone one, the contract only transfers the remaining balance (if any) of that milestone to the beneficiary. The total funds released for milestone one never exceed its scheduled amount.
 - **Security:** Only the registered verifier can trigger the fast track. It is only available for `Emergency` campaigns, and only once per campaign.
 
+## Verifier track record
+
+The contract keeps a fixed-size `VerifierStats` entry per verifier, read with `verifier_stats(verifier)`. It never grows with the number of campaigns.
+
+| Counter | Updated when |
+|---------|--------------|
+| `campaigns_assigned` | a campaign is created with the verifier, and when `reassign_verifier` makes them the campaign's verifier |
+| `milestones_approved` | the verifier records an approval (each multisig vote counts for the voter) |
+| `campaigns_completed` | the last milestone is released while the verifier is assigned |
+| `campaigns_cancelled` | `cancel_campaign`, `cancel_campaign_with_reason` or a missed milestone due date cancels the campaign while the verifier is assigned |
+| `total_slashed` | `slash_verifier` takes `slash_amount` from their bond |
+
+Reassignment never moves counters: the previous verifier keeps what happened while they held the campaign, and everything after the handover counts for the new verifier.
+
 ## Split payouts
 
 A campaign normally pays one beneficiary. `create_campaign_with_beneficiaries` takes up to `MAX_BENEFICIARIES` (10) recipients with shares in basis points instead.
