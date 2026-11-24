@@ -460,6 +460,21 @@ impl EmergencyAdvanceReleased {
     }
 }
 
+// ─── Issue #118: storage schema migration ────────────────────────────────────
+
+/// Emitted by every `migrate` call. `from == to` when nothing was pending.
+pub struct Migrated {
+    pub from: u32,
+    pub to: u32,
+}
+
+impl Migrated {
+    pub fn publish(&self, env: &Env) {
+        env.events()
+            .publish((symbol_short!("migrated"),), (self.from, self.to));
+    }
+}
+
 // ─── Issue #116: split payouts ───────────────────────────────────────────────
 
 /// Emitted once per beneficiary when a split-payout campaign pays out a

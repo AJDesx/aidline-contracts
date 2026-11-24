@@ -186,4 +186,6 @@ pub enum DataKey {
     CampaignDonors(u64),
     // Issue #116: beneficiaries of a split-payout campaign
     Beneficiaries(u64),
+    // Issue #118: version of the stored data layout (instance storage)
+    SchemaVersion,
 }

@@ -136,6 +136,21 @@ pub fn save_campaign(env: &Env, campaign: &Campaign) {
     bump(env, &key);
 }
 
+/// Version of the stored data layout. A deployment that predates versioning
+/// has no entry and reads as 0, so it stays pending until `migrate` runs.
+pub fn schema_version(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::SchemaVersion)
+        .unwrap_or(0)
+}
+
+pub fn set_schema_version(env: &Env, version: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::SchemaVersion, &version);
+}
+
 pub fn beneficiaries(env: &Env, campaign_id: u64) -> Option<Vec<Beneficiary>> {
     let key = DataKey::Beneficiaries(campaign_id);
     let list = env.storage().persistent().get(&key)?;

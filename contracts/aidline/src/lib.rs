@@ -26,7 +26,7 @@ pub use types::{
 };
 
 use events::{
-    AdminAccepted, AdminChanged, AdminProposed, BeneficiaryPaid, BondSlashed, BondWithdrawn, CampaignCancelled,
+    AdminAccepted, AdminChanged, AdminProposed, BeneficiaryPaid, BondSlashed, Migrated, BondWithdrawn, CampaignCancelled,
     CampaignCancelledWithReason, CampaignCreated, ContractPaused, ContractUnpaused,
     ContractUpgraded, DeadlineExtended, Donated, EmergencyAdvanceReleased, MatchingApplied,
     MetadataUpdated, MilestoneApproved, MilestoneRejected, MilestoneReleased, PlatformFeeUpdated,
@@ -53,6 +53,10 @@ const MAX_DEADLINE_EXTENSION: u64 = 30 * 86_400;
 
 /// Maximum number of times a campaign's verifier may be reassigned.
 pub const MAX_VERIFIER_REASSIGNMENTS: u32 = 2;
+
+/// Version of the stored data layout this build reads and writes (Issue #118).
+/// Bump it when a stored struct changes and add the step to `migrate`.
+pub const SCHEMA_VERSION: u32 = 1;
 
 /// Most beneficiaries a split-payout campaign may name (Issue #116).
 pub const MAX_BENEFICIARIES: u32 = 10;
@@ -81,6 +85,7 @@ impl Aidline {
         storage::set_admin(&env, &admin);
         storage::set_token(&env, &token);
         storage::set_token_allowed(&env, &token, true);
+        storage::set_schema_version(&env, SCHEMA_VERSION);
         storage::bump_instance(&env);
     }
 
@@ -271,6 +276,44 @@ impl Aidline {
         ContractUpgraded { new_wasm_hash }.publish(&env);
     }
 
+    // ─── Storage schema (Issue #118) ──────────────────────────────────────────
+
+    /// Returns the version of the stored data layout. `0` means the data was
+    /// written before versioning existed and [`migrate`] has not run yet.
+    pub fn schema_version(env: Env) -> u32 {
+        storage::schema_version(&env)
+    }
+
+    /// Upgrades stored data to [`SCHEMA_VERSION`], one version at a time, and
+    /// returns the resulting version.
+    ///
+    /// Only the admin may call this. Until it has run after an upgrade that
+    /// raised [`SCHEMA_VERSION`], the state-changing entry points fail with
+    /// [`Error::MigrationPending`]. Calling it when nothing is pending changes
+    /// nothing. Emits [`Migrated`] on every call.
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`]: caller is not the admin.
+    pub fn migrate(env: Env) -> u32 {
+        storage::admin(&env).require_auth();
+        let from = storage::schema_version(&env);
+        let mut version = from;
+        while version < SCHEMA_VERSION {
+            // Each arm upgrades the stored data from `version` to `version + 1`.
+            match version {
+                // 0 -> 1: the layout is unchanged; this step only marks the
+                // existing data as versioned.
+                0 => {}
+                _ => {}
+            }
+            version += 1;
+        }
+        storage::set_schema_version(&env, version);
+        storage::bump_instance(&env);
+        Migrated { from, to: version }.publish(&env);
+        version
+    }
+
     // ─── Platform Fee and Treasury (admin only) ───────────────────────────────
 
     /// Sets the platform fee in basis points.
@@ -384,6 +427,7 @@ impl Aidline {
     ///   or is zero.
     /// - [`Error::Unauthorized`]: `verifier` is already registered.
     pub fn register_with_bond(env: Env, verifier: Address, bond_amount: i128) -> Result<(), Error> {
+        Self::ensure_current_schema(&env)?;
         verifier.require_auth();
 
         let required = storage::bond_requirement(&env);
@@ -777,6 +821,7 @@ impl Aidline {
         min_donation: i128,
         approval_cooldown: u64,
     ) -> Result<u64, Error> {
+        Self::ensure_current_schema(&env)?;
         creator.require_auth();
         storage::bump_instance(&env);
 
@@ -1108,6 +1153,7 @@ impl Aidline {
     /// - [`Error::MilestoneOverdue`]: a milestone is overdue.
     /// - [`Error::GoalExceeded`]: campaign is already fully funded.
     pub fn donate(env: Env, donor: Address, campaign_id: u64, amount: i128) -> Result<i128, Error> {
+        Self::ensure_current_schema(&env)?;
         donor.require_auth();
         if storage::is_paused(&env) {
             return Err(Error::Paused);
@@ -1182,6 +1228,7 @@ impl Aidline {
         cap: i128,
         amount: i128,
     ) -> Result<(), Error> {
+        Self::ensure_current_schema(&env)?;
         sponsor.require_auth();
 
         if ratio_bps == 0 || ratio_bps > MAX_RATIO_BPS {
@@ -1254,6 +1301,7 @@ impl Aidline {
         donor: Address,
         donation_amount: i128,
     ) -> Result<i128, Error> {
+        Self::ensure_current_schema(&env)?;
         if donation_amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -1384,6 +1432,7 @@ impl Aidline {
         campaign_id: u64,
         pledged_amount: i128,
     ) -> Result<u64, Error> {
+        Self::ensure_current_schema(&env)?;
         donor.require_auth();
 
         if pledged_amount <= 0 {
@@ -1475,6 +1524,7 @@ impl Aidline {
     ///   on this campaign.
     /// - [`Error::AdvanceExceedsEscrow`]: no funds are currently in escrow.
     pub fn emergency_fast_track(env: Env, campaign_id: u64) -> Result<i128, Error> {
+        Self::ensure_current_schema(&env)?;
         let mut campaign = storage::campaign(&env, campaign_id)?;
         campaign.verifier.require_auth();
 
@@ -1625,6 +1675,7 @@ impl Aidline {
         if proof_uri.len() > MAX_URI_LENGTH {
             return Err(Error::UriTooLong);
         }
+        Self::ensure_current_schema(env)?;
         verifier.require_auth();
 
         if storage::is_paused(env) {
@@ -1849,6 +1900,7 @@ impl Aidline {
     }
 
     fn execute_refund(env: &Env, donor: &Address, campaign_id: u64) -> Result<i128, Error> {
+        Self::ensure_current_schema(env)?;
         let mut campaign = storage::campaign(env, campaign_id)?;
 
         let expired = Self::is_expired(env, &campaign);
@@ -2204,6 +2256,14 @@ impl Aidline {
     /// across its beneficiaries (Issue #116). Every share is rounded down and
     /// the leftover goes to the first beneficiary, so the payments always sum to
     /// exactly `amount`.
+    /// Fails while stored data is older than this build expects (Issue #118).
+    fn ensure_current_schema(env: &Env) -> Result<(), Error> {
+        if storage::schema_version(env) < SCHEMA_VERSION {
+            return Err(Error::MigrationPending);
+        }
+        Ok(())
+    }
+
     fn pay_beneficiaries(env: &Env, campaign: &Campaign, amount: i128) {
         let tok = token::Client::new(env, &campaign.token);
         let from = env.current_contract_address();

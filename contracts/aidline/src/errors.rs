@@ -83,4 +83,7 @@ pub enum Error {
 
     // Split payouts
     InvalidBeneficiaries = 48,
+
+    // Storage schema versioning
+    MigrationPending = 49,
 }
