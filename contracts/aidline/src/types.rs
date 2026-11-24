@@ -176,4 +176,6 @@ pub enum DataKey {
     VerifierProfile(Address),
     // Paginated donors list
     CampaignDonors(u64),
+    // Issue #125: ids of the pledges made to one campaign
+    CampaignPledges(u64),
 }

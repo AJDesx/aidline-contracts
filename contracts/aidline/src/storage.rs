@@ -242,11 +242,23 @@ pub fn next_pledge_id(env: &Env) -> u64 {
     id
 }
 
-pub fn next_pledge_id_peek(env: &Env) -> u64 {
-    env.storage()
-        .instance()
-        .get(&DataKey::PledgeCount)
-        .unwrap_or(0)
+/// Ids of the pledges made to `campaign_id`, so settling one campaign never
+/// reads another campaign's pledges (Issue #125).
+pub fn campaign_pledges(env: &Env, campaign_id: u64) -> Vec<u64> {
+    let key = DataKey::CampaignPledges(campaign_id);
+    match env.storage().persistent().get(&key) {
+        Some(ids) => {
+            bump(env, &key);
+            ids
+        }
+        None => Vec::new(env),
+    }
+}
+
+pub fn save_campaign_pledges(env: &Env, campaign_id: u64, ids: &Vec<u64>) {
+    let key = DataKey::CampaignPledges(campaign_id);
+    env.storage().persistent().set(&key, ids);
+    bump(env, &key);
 }
 
 pub fn pledge(env: &Env, pledge_id: u64) -> Option<Pledge> {

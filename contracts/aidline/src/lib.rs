@@ -1320,6 +1320,9 @@ impl Aidline {
             active: true,
         };
         storage::save_pledge(&env, &pledge);
+        let mut campaign_pledges = storage::campaign_pledges(&env, campaign_id);
+        campaign_pledges.push_back(pledge_id);
+        storage::save_campaign_pledges(&env, campaign_id, &campaign_pledges);
 
         PledgeCreated {
             pledge_id,
@@ -1589,14 +1592,8 @@ impl Aidline {
         }
 
         // Threshold reached! Release the milestone.
-        let pledge_count = storage::next_pledge_id_peek(env);
-        let total_pledged_pulled = Self::pull_pledges(
-            env,
-            campaign_id,
-            milestone_amount,
-            pledge_count,
-            &mut campaign,
-        );
+        let total_pledged_pulled =
+            Self::pull_pledges(env, campaign_id, milestone_amount, &mut campaign);
 
         PledgeSettlement {
             campaign_id,
@@ -2136,7 +2133,6 @@ impl Aidline {
         env: &Env,
         campaign_id: u64,
         milestone_amount: i128,
-        pledge_count: u64,
         campaign: &mut Campaign,
     ) -> i128 {
         let tok = token::Client::new(env, &campaign.token);
@@ -2145,17 +2141,22 @@ impl Aidline {
         // Phase 1: gather active pledges for this campaign.
         let mut active_pledges: Vec<Pledge> = Vec::new(env);
         let mut total_remaining: i128 = 0;
-        let mut i: u64 = 0;
-        while i < pledge_count {
-            if let Some(p) = storage::pledge(env, i)
-                && p.campaign_id == campaign_id
+        // Only this campaign's own pledge ids are read (#125). Pledges that are
+        // cancelled or fully pulled are dropped from the list so it stays short.
+        let pledge_ids = storage::campaign_pledges(env, campaign_id);
+        let mut still_open: Vec<u64> = Vec::new(env);
+        for pledge_id in pledge_ids.iter() {
+            if let Some(p) = storage::pledge(env, pledge_id)
                 && p.active
                 && p.pulled_amount < p.pledged_amount
             {
                 total_remaining += p.pledged_amount - p.pulled_amount;
+                still_open.push_back(pledge_id);
                 active_pledges.push_back(p);
             }
-            i += 1;
+        }
+        if still_open.len() != pledge_ids.len() {
+            storage::save_campaign_pledges(env, campaign_id, &still_open);
         }
         if total_remaining == 0 || active_pledges.is_empty() {
             return 0;
